@@ -14,7 +14,7 @@ GoSLP aims to take a more optimized approach than the naive LLVM implementation.
 
 
 ## Authors
-Jason Majoros
-Rishi Rallapalli 
-Luke Nelson
-Anvita Gollu
+Jason Majoros  
+Rishi Rallapalli  
+Luke Nelson  
+Anvita Gollu  
