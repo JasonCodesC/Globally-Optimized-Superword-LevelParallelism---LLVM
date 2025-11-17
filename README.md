@@ -11,15 +11,15 @@ GoSLP aims to take a more optimized approach than the naive LLVM implementation.
 File Structure
 
 /project-root
-│── /src    
-│   ├── /cpp
-        ├── CandidatePacks.cpp
-        ├── Emit.cpp
-        ├── GoSLPPass.cpp
-        ├── ILP.cpp
-        ├── PermuteDP.cpp
-        ├── ShuffleCost.cpp
-        ├── VecGraph.cpp
+│── /src     
+│   ├── /cpp 
+        ├── CandidatePacks.cpp 
+        ├── Emit.cpp 
+        ├── GoSLPPass.cpp 
+        ├── ILP.cpp 
+        ├── PermuteDP.cpp 
+        ├── ShuffleCost.cpp 
+        ├── VecGraph.cpp 
 │── README.md              # Documentation
 ```
 
