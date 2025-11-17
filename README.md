@@ -6,9 +6,7 @@
 This Project is an implementation of the paper GoSLP, originally created by Charith Mendis and Saman Amarasinghe.
 This implementation was created as a final project for CSE 583 (Advanced Compilers) at the University of Michigan, Ann Arbor
 
-GoSLP aims to take a more optimized approach than the naive LLVM implementation.
-
-File Structure
+GoSLP aims to take a more optimized approach of Superword Level Parallelism than the naive LLVM implementation.
 
 
 ## File Structure
