@@ -8,6 +8,21 @@ This implementation was created as a final project for CSE 583 (Advanced Compile
 
 GoSLP aims to take a more optimized approach than the naive LLVM implementation.
 
+File Structure
+
+/project-root
+│── /src    
+│   ├── /cpp
+        ├── CandidatePacks.cpp
+        ├── Emit.cpp
+        ├── GoSLPPass.cpp
+        ├── ILP.cpp
+        ├── PermuteDP.cpp
+        ├── ShuffleCost.cpp
+        ├── VecGraph.cpp
+│── README.md              # Documentation
+```
+
 # TODO explain how it works
 
 # TODO explain actual coding and how to run
