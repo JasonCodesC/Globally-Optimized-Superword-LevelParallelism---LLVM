@@ -17,13 +17,13 @@ File Structure
 /project-root
 │── /src
 │   ├── /cpp
-│   │   ├── CandidatePacks.cpp
-│   │   ├── Emit.cpp
-│   │   ├── GoSLPPass.cpp
-│   │   ├── ILP.cpp
-│   │   ├── PermuteDP.cpp
-│   │   ├── ShuffleCost.cpp
-│   │   └── VecGraph.cpp
+│   │   ├── CandidatePacks.cpp      # Find Legal Packs
+│   │   ├── Emit.cpp                # Rewrite IR
+│   │   ├── GoSLPPass.cpp           # Pass that brings all the logic together
+│   │   ├── ILP.cpp                 # ILP to choose which packs to keep
+│   │   ├── PermuteDP.cpp           # DP to pick lane orders
+│   │   ├── ShuffleCost.cpp         # Shuffle Cost model
+│   │   └── VecGraph.cpp            # Dependency Graph of Packs
 │── README.md  # Documentation
 
 ```
