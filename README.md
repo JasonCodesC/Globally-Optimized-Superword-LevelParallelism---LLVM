@@ -26,6 +26,7 @@ File Structure
 │   │   └── VecGraph.cpp
 │── README.md  # Documentation
 
+```
 
 # TODO explain how it works
 
