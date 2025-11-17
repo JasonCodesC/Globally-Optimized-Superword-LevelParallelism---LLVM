@@ -1,0 +1,11 @@
+
+struct CandidatePairs {
+    
+};
+
+
+CandidatePairs collectCandidatePairs() {
+    
+}
+
+ 
