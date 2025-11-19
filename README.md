@@ -1,5 +1,6 @@
 # Globally-Optimized-Superword-LevelParallelism---LLVM
 
+Luke (VecGraph) --> Rishi (ShuffleCost) --> Anvita (PermuteDP) and Jason (Emit, GoSLPPass, ILP)
 
 ## Overview
 
