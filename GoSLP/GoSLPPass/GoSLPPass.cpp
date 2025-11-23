@@ -19,6 +19,7 @@ PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM) {
     //There will probably be a loop around all of this for iterative widening.
     CandidatePairs C = collectCandidatePairs(F, AA, MSSA);
     // VecGraph
+    VecGraph vec = buildVectorGraph(CandidatePairs);
     // Shuffle Cost
     // ILP
     // DP
