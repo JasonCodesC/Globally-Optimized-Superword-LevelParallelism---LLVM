@@ -6,39 +6,8 @@ This file collects legal candidate packs via the methods and constraints specifi
 
 */
 #pragma once
-#include "llvm/IR/Function.h"
-#include "llvm/IR/Instructions.h"
-#include "llvm/IR/InstrTypes.h"
-#include "llvm/IR/Operator.h"
-#include "llvm/IR/DataLayout.h"
-#include "llvm/IR/Module.h"
-#include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/MemorySSA.h"
-#include "llvm/Analysis/MemoryLocation.h"
-#include "llvm/Analysis/ValueTracking.h"
-#include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/ADT/ArrayRef.h"
-
-#include <vector>
-#include <unordered_map>
-#include <unordered_set>
-#include <cstdint>
-#include <algorithm>
-#include <utility>
-#include <queue>
-
+#include "CandidatePacks.hpp"
 using namespace llvm;
-
-
-struct CandidateId {
-  uint32_t Width;  // always 2
-  uint32_t Index;  // index
-};
-
-struct CandidatePairs {
-  std::vector<std::vector<const Instruction *>> Packs;
-  std::unordered_map<const Instruction *, std::vector<CandidateId>> InstToCandidates;
-};
 
 // return true if load/store
 bool accessesMemory(const Instruction *I) {

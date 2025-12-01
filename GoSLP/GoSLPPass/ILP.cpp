@@ -1,9 +1,5 @@
 //ILP
-#pragma once
-#include <vector>
-#include <unordered_set>
-#include <chrono>
-#include <functional>
+#include "ILP.hpp"
 
 // Solve a 0/1 "ILP" for goSLP pack selection:
 //

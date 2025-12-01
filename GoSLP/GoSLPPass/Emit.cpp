@@ -1,15 +1,5 @@
 //Emit.cpp
-#pragma once
-#include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/Instructions.h"
-#include "llvm/IR/DerivedTypes.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/Function.h"
-#include <vector>
-#include <cstdint>
-
-using namespace llvm;
-
+#include "Emit.hpp"
 
 bool good_mem_ops(const std::vector<const Instruction *> &lanes, const DataLayout &DL,
     Type *elem_ty, std::vector<int> &mem_index) {

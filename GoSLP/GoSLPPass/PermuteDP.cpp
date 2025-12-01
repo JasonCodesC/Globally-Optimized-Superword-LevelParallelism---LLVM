@@ -1,20 +1,5 @@
 // DP
-#pragma once
-#include "VecGraph.cpp"
-#include "ShuffleCost.cpp"
-#include <algorithm>
-#include <limits>
-#include <unordered_map>
-#include <queue>
-#include <vector>
-#include "llvm/IR/Instruction.h"
-
-using namespace llvm;
-
-using Permutation = std::vector<unsigned>;
-using PermsList =  std::vector<Permutation>;
-using CostVec = std::vector<InstructionCost>;
-using Perms = std::unordered_map<int, Permutation>; // key = PackIdx(int), value = chosen lane ordering
+#include "PermuteDP.hpp"
 
 PermsList generatePerms(unsigned width){
     PermsList list;
@@ -46,7 +31,7 @@ static std::vector<const Instruction *> applyPermutation(const std::vector<const
 
 
 // DP implementation
-Perms choosePermutationsDP(const VecGraph &G, ShuffleCost &SC){
+Perms choosePermutationsDP(const VecGraph &G, ShuffleCost &SC) {
     Perms result;
     unsigned n = G.items.size();
     if (n==0) return result;

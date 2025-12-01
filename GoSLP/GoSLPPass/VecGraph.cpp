@@ -1,19 +1,5 @@
 // VecGraph
-#pragma once
-#include "CandidatePacks.cpp"
-
-struct Node {
-    int PackIdx;
-    std::vector<const Instruction *> pack; // not necessary because I can just use PackIdx but will help with printing
-    std::vector<int> Defs; // list of PackIdx's this pack depends on
-    std::vector<int> Uses; //same but for uses
-};
-
-
-struct VecGraph { 
-    std::vector<Node> items; // each item will point to all its respective defs and uses
-};
-
+#include "VecGraph.hpp"
 
 VecGraph buildVectorGraph(CandidatePairs& C) {
     VecGraph graph;
@@ -33,10 +19,10 @@ VecGraph buildVectorGraph(CandidatePairs& C) {
                 if (auto *UI = dyn_cast<Instruction>(U)) {
                     auto It = C.InstToCandidates.find(UI);
                     if (It != C.InstToCandidates.end()) {
-                        for (int childPack : It->second) {
-                            if (childPack != id) {
-                                graph.items[id].Uses.push_back(childPack);
-                                graph.items[childPack].Defs.push_back(id);
+                        for (auto childPack : It->second) {
+                            if (childPack.Index != id) {
+                                graph.items[id].Uses.push_back(childPack.Index);
+                                graph.items[childPack.Index].Defs.push_back(id);
                             }
                         }
                     }
