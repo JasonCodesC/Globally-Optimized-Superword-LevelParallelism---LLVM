@@ -1,5 +1,5 @@
-// int edgeShuffleCost();
-
+// shuffleCost
+#pragma once
 #include "VecGraph.cpp"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Instructions.h"

@@ -5,7 +5,7 @@ CanditdatePacks.cpp
 This file collects legal candidate packs via the methods and constraints specified in the GoSLP paper
 
 */
-
+#pragma once
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/InstrTypes.h"

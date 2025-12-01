@@ -1,3 +1,5 @@
+// VecGraph
+#pragma once
 #include "CandidatePacks.cpp"
 
 struct Node {
