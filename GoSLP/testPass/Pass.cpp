@@ -25,7 +25,7 @@ llvmGetPassPluginInfo() {
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, FunctionPassManager &FPM,
                    ArrayRef<PassBuilder::PipelineElement>) {
-                  if (Name == "func-name") {
+                  if (Name == "testPass") {
                     FPM.addPass(FunctionNamePass());
                     return true;
                   }
