@@ -9,6 +9,7 @@ fi
 
 testfile="$1"
 passName="$2"
+outFile=
 tmp="${testfile#*/}"
 testfilebase="${tmp%.*}"
 
@@ -21,4 +22,4 @@ make
 clang -emit-llvm -S ../"$testfile" -Xclang -disable-O0-optnone
 
 # run pass
-opt -disable-output -load-pass-plugin=./"$passName"/"$passName".so -passes="func-name" "$testfilebase".ll
+opt -load-pass-plugin=./"$passName"/"$passName".so -passes="$passName" -S "$testfilebase".ll -o ./"$passName"/"$testfilebase".ll
