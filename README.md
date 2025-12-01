@@ -1,11 +1,9 @@
 # Globally-Optimized-Superword-LevelParallelism---LLVM
 
-Luke (VecGraph) --> Rishi (ShuffleCost) --> Anvita (PermuteDP) and Jason (Emit, GoSLPPass, ILP)
-
 ## Overview
 
 This Project is an implementation of the paper GoSLP, originally created by Charith Mendis and Saman Amarasinghe.
-This implementation was created as a final project for CSE 583 (Advanced Compilers) at the University of Michigan, Ann Arbor
+This was created as a final project for CSE 583 (Advanced Compilers) at the University of Michigan, Ann Arbor
 
 GoSLP aims to take a more optimized approach of Superword Level Parallelism than the naive LLVM implementation.
 
@@ -14,23 +12,31 @@ GoSLP aims to take a more optimized approach of Superword Level Parallelism than
 
 ```text
 /project-root
-│── /src
-│   ├── /cpp
-│   │   ├── CandidatePacks.cpp      # Find Legal Packs
-│   │   ├── Emit.cpp                # Rewrite IR
-│   │   ├── GoSLPPass.cpp           # Pass that brings all the logic together
-│   │   ├── ILP.cpp                 # ILP to choose which packs to keep
-│   │   ├── PermuteDP.cpp           # DP to pick lane orders
-│   │   ├── ShuffleCost.cpp         # Shuffle Cost model
-│   │   └── VecGraph.cpp            # Dependency Graph of Packs
+│── /GoSLP
+│   │   ├── CMakeLists.txt          # For compilation
+│   │   ├── run.sh                  # Script to run
+│   │   ├── /tests                   # A folder of C programs for tests
+│   │   ├── /testPass                # A folder for the test passes
+│   │   ├── /GoSLPPass
+│   │   │   ├── CandidatePacks.cpp      # Find Legal Packs
+│   │   │   ├── CMakeLists.txt          # For compilation
+│   │   │   ├── Emit.cpp                # Rewrite IR
+│   │   │   ├── GoSLPPass.cpp           # Pass that brings all the logic together
+│   │   │   ├── ILP.cpp                 # ILP to choose which packs to keep
+│   │   │   ├── PermuteDP.cpp           # DP to pick lane orders
+│   │   │   ├── ShuffleCost.cpp         # Shuffle Cost model
+│   │   │   └── VecGraph.cpp            # Dependency Graph of Packs
 │── README.md  # Documentation
+│── .gitignore 
 
 ```
 
 ## Overview of GoSLP
 
+GoSLP takes advantage of SIMD instructions. In LLVM we use greedy hueristics when we want to use vectorization which although comes with much less overhead than GoSLP, it is slower at runtime and we are loosing out on performance. GoSLP goes through a few different stages to improve on LLVM that will be described in order below.
 
-## File Overview
+
+## Pass Overview
 
 
 ### CandidatePacks.cpp:
@@ -46,6 +52,8 @@ In this file we find all of the candidate packs inside of a function. We follow 
 ### PermuteDP.cpp:
 
 ### Emit.cpp:
+
+### GoSLPPass.cpp:
 
 
 # TODO how to run
