@@ -19,7 +19,16 @@ cmake -DPASS_DIR="$passName" ..
 make
 
 # create IR
-clang -emit-llvm -S ../"$testfile" -Xclang -disable-O0-optnone
+clang -O0 -emit-llvm -S ../"$testfile" -Xclang -disable-O0-optnone -fno-slp-vectorize -fno-discard-value-names
 
 # run pass
 opt -load-pass-plugin=./"$passName"/"$passName".so -passes="$passName" -S "$testfilebase".ll -o ./"$passName"/"$testfilebase".ll
+
+# compile to object
+clang -c ./"$passName"/"$testfilebase".ll -o ./"$passName"/"$testfilebase".o
+
+# link object -> executable
+clang ./"$passName"/"$testfilebase".o -o ./"$passName"/"$testfilebase"_exe
+
+# run it
+./"$passName"/"$testfilebase"_exe
