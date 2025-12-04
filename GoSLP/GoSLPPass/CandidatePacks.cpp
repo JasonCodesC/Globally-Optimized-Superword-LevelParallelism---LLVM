@@ -7,6 +7,18 @@ This file collects legal candidate packs via the methods and constraints specifi
 */
 #pragma once
 #include "CandidatePacks.hpp"
+#include "llvm/IR/Instruction.h"
+#include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Analysis/SimplifyQuery.h"
+#include "llvm/Analysis/WithCache.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/FMF.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/Support/Compiler.h"
 using namespace llvm;
 
 // return true if load/store
@@ -93,34 +105,91 @@ bool areIsomorphic(const Instruction *I1, const Instruction *I2) {
 }
 
 // compute base and offset for a load/store
-bool getAddrBaseAndOffset(const Instruction *I, const DataLayout &DL,
-        const Value *&Base, int64_t &ByteOffset) {
+// bool getAddrBaseAndOffset(const Instruction *I, const DataLayout &DL,
+//         const Value *&Base, int64_t &ByteOffset) {
 
-  Value *Ptr = nullptr;
+//   Value *Ptr = nullptr;
+//   Type *ElemTy = nullptr;
+
+//   if (auto const *L = dyn_cast<LoadInst>(I)) {
+//     Ptr = const_cast<Value *>(L->getPointerOperand());
+//     ElemTy = L->getType();
+//   } 
+//   else if (auto const *S = dyn_cast<StoreInst>(I)) {
+//     Ptr = const_cast<Value *>(S->getPointerOperand());
+//     ElemTy = S->getValueOperand()->getType();
+//   } 
+//   else {
+//     return false;
+//   }
+
+//   errs() << "got here 1\n";
+
+//   if (!ElemTy->isSized())
+//     return false;
+
+//   errs() << "got here 2\n";
+
+//   APInt Offset(DL.getPointerSizeInBits(0), 0);
+
+//   Ptr = Ptr->stripAndAccumulateInBoundsConstantOffsets(DL, Offset);
+//   Base = Ptr->stripInBoundsConstantOffsets();
+//   ByteOffset = Offset.getSExtValue();
+
+//   return true;
+// }
+
+// compute base and offset for a load/store
+bool getAddrBaseAndOffset(const Instruction *I, const DataLayout &DL,
+                          const Value *&Base, int64_t &ByteOffset) {
+  const Value *Ptr = nullptr;
   Type *ElemTy = nullptr;
 
   if (auto const *L = dyn_cast<LoadInst>(I)) {
-    Ptr = const_cast<Value *>(L->getPointerOperand());
-    ElemTy = L->getType();
-  } 
-  else if (auto const *S = dyn_cast<StoreInst>(I)) {
-    Ptr = const_cast<Value *>(S->getPointerOperand());
+    Ptr = L->getPointerOperand();                 // e.g. %12 or %19
+    ElemTy = L->getType();                        // i32
+  } else if (auto const *S = dyn_cast<StoreInst>(I)) {
+    Ptr = S->getPointerOperand();
     ElemTy = S->getValueOperand()->getType();
-  } 
-  else {
+  } else {
     return false;
   }
 
   if (!ElemTy->isSized())
     return false;
 
-  APInt Offset(DL.getPointerSizeInBits(0), 0);
+  // Start from the pointer operand and strip inbounds constant GEPs,
+  // accumulating the byte offset.
+  APInt Offset(DL.getIndexTypeSizeInBits(Ptr->getType()), 0);
+  const Value *PtrNoConstGEP =
+      Ptr->stripAndAccumulateInBoundsConstantOffsets(DL, Offset);
 
-  Ptr = Ptr->stripAndAccumulateInBoundsConstantOffsets(DL, Offset);
-  Base = Ptr->stripInBoundsConstantOffsets();
+  // Canonical base: underlying object (alloca, global, arg, etc.).
+  // This makes both a[0] and a[1] see the same Base.
+  // Base = getUnderlyingObject(PtrNoConstGEP, DL);
+  Base = getUnderlyingObject(PtrNoConstGEP);
+
   ByteOffset = Offset.getSExtValue();
-
   return true;
+}
+
+bool areLoadsEquivalent(const Instruction *A, const Instruction *B) {
+    if (!A || !B) return false;
+    if (A->getOpcode() != B->getOpcode())
+        return false;
+
+    // Must be load
+    if (A->getOpcode() != Instruction::Load)
+        return false;
+
+    const LoadInst *LA = cast<LoadInst>(A);
+    const LoadInst *LB = cast<LoadInst>(B);
+
+    if (LA->getType() != LB->getType()) return false;
+    if (LA->getAlign() != LB->getAlign()) return false;
+    if (LA->isVolatile() != LB->isVolatile()) return false;
+
+    return true;
 }
 
 // same base object and offset differs by exactly one
@@ -145,14 +214,18 @@ bool areAdjacentMemoryAccesses(const Instruction *I1, const Instruction *I2,
   if (!getAddrBaseAndOffset(I2, DL, Base2, Off2)) {
     return false;
   }
-  // not adjacent
-  if (Base1 != Base2) {
+  errs() << "Base 1 : " << *Base1 << " 2: " << *Base2 << "\n";
+  if (!areLoadsEquivalent(I1, I2)) {
     return false;
   }
+  // if (Base1 != Base2) {
+  //   return false;
+  // }
+  errs() << "got through this 22\n";
   // ensure they are different objects
-  if (AA.isNoAlias(MemoryLocation::get(I1), MemoryLocation::get(I2))) {
-    return false;
-  }
+  // if (AA.isNoAlias(MemoryLocation::get(I1), MemoryLocation::get(I2))) {
+  //   return false;
+  // }
 
   // ensure elements are adjacent
   Type *ElemTy = nullptr;
@@ -166,6 +239,7 @@ bool areAdjacentMemoryAccesses(const Instruction *I1, const Instruction *I2,
   if (!ElemTy->isSized()) {
     return false;
   }
+  errs() << "got through this elemty\n";
   uint64_t ElemSize = DL.getTypeStoreSize(ElemTy);
   int64_t Diff = Off1 - Off2;
   if (Diff < 0) {
@@ -199,22 +273,24 @@ bool isTransitivelyDependent(Instruction *From, Instruction *To, MemorySSA &MSSA
     for (User *U : Cur->users()) {
       if (auto *UI = dyn_cast<Instruction>(U)) {
         if (Visited.insert(UI).second) {
+          errs() << "adding user: " << *U << "\n";
           Q.push(UI);
         }
       }
     }
 
-    // push users to q
-    if (MemoryAccess *MA = MSSA.getMemoryAccess(Cur)) {
-      for (User *MU : MA->users()) {
-        if (auto *MUOD = dyn_cast<MemoryUseOrDef>(MU)) {
-          Instruction *MemI = MUOD->getMemoryInst();
-          if (Visited.insert(MemI).second) {
-            Q.push(MemI);
-          }
-        }
-      }
-    }
+    // // push users to q
+    // if (MemoryAccess *MA = MSSA.getMemoryAccess(Cur)) {
+    //   for (User *MU : MA->users()) {
+    //     if (auto *MUOD = dyn_cast<MemoryUseOrDef>(MU)) {
+    //       Instruction *MemI = MUOD->getMemoryInst();
+    //       if (Visited.insert(MemI).second) {
+    //         errs() << "adding user: " << *MemI << "\n";
+    //         Q.push(MemI);
+    //       }
+    //     }
+    //   }
+    // }
   }
 
   return false;
@@ -276,23 +352,29 @@ bool isCandidateStatement(Instruction *I) {
 bool legalGoSLPPair(Instruction *I1, Instruction *I2, const DataLayout &DL,
     AAResults &AA, MemorySSA &MSSA) {
 
+  errs() << "I1: " << *I1 << " I2: " << *I2 << "\n";
   if (I1 == I2) {
     return false;
   }
+  errs() << "got1\n";
   if (!areIsomorphic(I1, I2)) {
     return false;
   }
+  errs() << "got2\n";
   if (!areIndependent(I1, I2, MSSA)) {
     return false;
   }
+  errs() << "got3\n";
   if (!areSchedulableTogether(I1, I2)) {
     return false;
   }
+  errs() << "got4\n";
   if (accessesMemory(I1) || accessesMemory(I2)) {
     if (!areAdjacentMemoryAccesses(I1, I2, DL, AA)) {
       return false;
     }
   }
+  errs() << "got5\n";
 
   return true;
 }
@@ -315,10 +397,12 @@ CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA
 
   // assign indices to all candidate statements in function order.
   for (BasicBlock &BB : F) {
+    errs() << "Looking at basic block " << BB << "\n";
     for (Instruction &I : BB) {
       if (!isCandidateStatement(&I)) {
         continue;
       }
+      errs() << "looking at instruction " << I << "\n";
       Index[&I] = Pos++;
     }
   }
@@ -333,9 +417,11 @@ CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA
       if (!isCandidateStatement(&I)) {
         continue;
       }
+      errs() << "adding to stmtsinbb\n";
       StmtsInBB.push_back(&I);
     }
     const uint32_t N = StmtsInBB.size();
+    errs() << "size " << StmtsInBB.size() << "\n";
     if (N < 2) {
       continue;
     }
@@ -346,10 +432,52 @@ CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA
         if (!legalGoSLPPair(I1, I2, DL, AA, MSSA)) {
           continue;
         }
+        errs() << "Calling add pack\n";
         addPack(Result, I1, I2);
       }
     }
   }
 
   return Result;
+}
+
+
+void printCandidatePairs(const CandidatePairs &CP) {
+    errs() << "===== CandidatePairs =====\n";
+
+    // ---- Print Packs ----
+    errs() << "Packs (" << CP.Packs.size() << "):\n";
+    for (size_t i = 0; i < CP.Packs.size(); ++i) {
+        errs() << "  Pack " << i << ":\n";
+        for (const Instruction *Inst : CP.Packs[i]) {
+            errs() << "    ";
+            if (Inst)
+                Inst->print(errs());
+            else
+                errs() << "<null inst>";
+            errs() << "\n";
+        }
+    }
+
+    // ---- Print InstToCandidates ----
+    errs() << "InstToCandidates (" << CP.InstToCandidates.size() << "):\n";
+    for (const auto &Entry : CP.InstToCandidates) {
+        const Instruction *Inst = Entry.first;
+        const std::vector<CandidateId> &Candidates = Entry.second;
+
+        errs() << "  Instruction: ";
+        if (Inst)
+            Inst->print(errs());
+        else
+            errs() << "<null inst>";
+        errs() << "\n";
+
+        errs() << "    Candidates (" << Candidates.size() << "):\n";
+        for (const CandidateId &CID : Candidates) {
+            errs() << "      CandidateId { Width=" << CID.Width
+                   << ", Index=" << CID.Index << " }\n";
+        }
+    }
+
+    errs() << "==========================\n";
 }

@@ -48,3 +48,6 @@ bool isCandidateStatement(Instruction *I);
 bool legalGoSLPPair(Instruction *I1, Instruction *I2, const DataLayout &DL,
     AAResults &AA, MemorySSA &MSSA);
 CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA);
+
+
+void printCandidatePairs(const CandidatePairs &CP);
