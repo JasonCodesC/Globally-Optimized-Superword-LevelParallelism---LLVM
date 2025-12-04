@@ -7,13 +7,11 @@ bool good_mem_ops(const std::vector<const Instruction *> &lanes, const DataLayou
     int width = lanes.size();
     mem_index.assign(width, 0);
     if (!elem_ty->isSized()) {
-        errs() << " 10";
         return false;
     }
 
     int elem_size = DL.getTypeStoreSize(elem_ty);
     if (elem_size == 0) {
-        errs() << " 16";
         return false;
     }
 
@@ -24,7 +22,6 @@ bool good_mem_ops(const std::vector<const Instruction *> &lanes, const DataLayou
         const Value *base = nullptr;
         int64_t byte_offset = 0;
         if (!getAddrBaseAndOffset(inst, DL, base, byte_offset)) {
-            errs() << " 26";
             return false;
         }
         bases[i] = base;
@@ -34,7 +31,6 @@ bool good_mem_ops(const std::vector<const Instruction *> &lanes, const DataLayou
     // const Value *base0 = bases[0];
     // for (int i = 1; i < width; ++i) {
     //     if (bases[i] != base0) {
-    //         errs() << " 37";
     //         return false;
     //     }
     // }
@@ -50,20 +46,16 @@ bool good_mem_ops(const std::vector<const Instruction *> &lanes, const DataLayou
     for (int i = 0; i < width; ++i) {
         int diff = offs[i] - off_min;
         if (diff < 0) {
-            errs() << " 53";
             return false;
         }
         if (diff % elem_size != 0) {
-            errs() << " 57";
             return false;
         }
         int idx = (diff / elem_size);
         if (idx < 0 || idx >= width) {
-            errs() << " 62";
             return false;
         }
         if (used[idx]) {
-            errs() << " 66";
             return false;
         }
         used[idx] = true;
@@ -72,7 +64,6 @@ bool good_mem_ops(const std::vector<const Instruction *> &lanes, const DataLayou
 
     for (int i = 0; i < width; ++i) {
         if (!used[i]) {
-            errs() << " 75";
             return false;
         }
     }
@@ -200,9 +191,6 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
         if (!Chosen[i]) {
             continue;
         }
-        for (auto& it : C.Packs[i]) {
-            errs() << *it << "\n";
-        }
 
         const auto &lanes = C.Packs[i];
         if (lanes.empty())
@@ -319,33 +307,33 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
                 }
             }
 
-            errs() << "InsertPt: " << *insert_pt << " in BB: " << insert_pt->getParent()->getName() << "\n";
-            errs() << "Latestoperand: " << *latestOperand << " in BB: " << latestOperand->getParent()->getName() << "\n";
-            for (int lane = 0; lane < width; ++lane) {
-            Instruction *I = const_cast<Instruction*>(lanes_copy[lane]);
-            errs() << "Lane["<<lane<<"]: " << *I << " in BB: " << I->getParent()->getName() << "\n";
-            errs() << "  operand0: " << *I->getOperand(0) << "\n";
-            errs() << "  operand1: " << *I->getOperand(1) << "\n";
-            }
+            // errs() << "InsertPt: " << *insert_pt << " in BB: " << insert_pt->getParent()->getName() << "\n";
+            // errs() << "Latestoperand: " << *latestOperand << " in BB: " << latestOperand->getParent()->getName() << "\n";
+            // for (int lane = 0; lane < width; ++lane) {
+            //     Instruction *I = const_cast<Instruction*>(lanes_copy[lane]);
+            //     errs() << "Lane["<<lane<<"]: " << *I << " in BB: " << I->getParent()->getName() << "\n";
+            //     errs() << "  operand0: " << *I->getOperand(0) << "\n";
+            //     errs() << "  operand1: " << *I->getOperand(1) << "\n";
+            // }
 
             Instruction *IP = insert_pt; // your chosen insertion instruction
             for (const Instruction *laneInst : lanes_copy) {
             const Instruction *old = laneInst;
-            for (auto *U : old->users()) {
-                if (const Instruction *userI = dyn_cast<Instruction>(U)) {
-                errs() << "User of " << *old << " -> " << *userI << " in BB: " 
-                        << userI->getParent()->getName() << "\n";
-                // quick local check if in same BB and before/after:
-                if (userI->getParent() == IP->getParent()) {
-                    if (userI->comesBefore(IP))
-                    errs() << "  user comes BEFORE insert_pt -> PROBLEM\n";
-                } else {
-                    errs() << "  user in different BB\n";
-                }
-                } else {
-                errs() << "  non-instruction user\n";
-                }
-            }
+            // for (auto *U : old->users()) {
+            //     if (const Instruction *userI = dyn_cast<Instruction>(U)) {
+            //     errs() << "User of " << *old << " -> " << *userI << " in BB: " 
+            //             << userI->getParent()->getName() << "\n";
+            //     // quick local check if in same BB and before/after:
+            //     if (userI->getParent() == IP->getParent()) {
+            //         if (userI->comesBefore(IP))
+            //         errs() << "  user comes BEFORE insert_pt -> PROBLEM\n";
+            //     } else {
+            //         errs() << "  user in different BB\n";
+            //     }
+            //     } else {
+            //     errs() << "  non-instruction user\n";
+            //     }
+            // }
             }
 
             Instruction *vec_bin_op = cast<Instruction>(builder.CreateBinOp(bin_op->getOpcode(), 
@@ -363,7 +351,7 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
             }
             IRBuilder<> builder(insertBefore); // Builder for vector op and prologue
 
-            errs() << "Vectorization Insert Before: " << *insertBefore << "\n";
+            // errs() << "Vectorization Insert Before: " << *insertBefore << "\n";
             // ... (Your debug prints) ...
 
             // 2. Create the Vector Operation using the safe builder
@@ -393,9 +381,9 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
 
                     // FIX: If the extract is placed before the definition (vec_bin_op),
                     // move the extract to a point that dominates it, i.e., immediately after vec_bin_op.
-                    errs() << "X " << *replacement << *vec_bin_op << isa<Instruction>(replacement) << cast<Instruction>(replacement)->comesBefore(vec_bin_op) << "\n";
+                    // errs() << "X " << *replacement << *vec_bin_op << isa<Instruction>(replacement) << cast<Instruction>(replacement)->comesBefore(vec_bin_op) << "\n";
                     if (isa<Instruction>(replacement)) {
-                        errs() << "we are here\n";
+                        // errs() << "we are here\n";
                         cast<Instruction>(replacement)->moveAfter(vec_bin_op);
                         // The builder needs to be reset for subsequent extracts if this move affects instruction ordering.
                         // However, since we are replacing all uses of old_inst, this simple move is fine.
@@ -408,11 +396,9 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
                         }
                         
                         for (Instruction *I : users_to_move) {
-                            errs() << "user to move: " << *I << " " << *replacement << "\n";
                             I->moveAfter(cast<Instruction>(replacement));
                         }
                     } else {
-                        errs() << "we are here3\n";
                         // SmallVector<Instruction*> users_to_move;
                         // for (User *U : old_inst->users()) {
                         //     if (Instruction *userI = dyn_cast<Instruction>(U)) {
@@ -474,14 +460,12 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
             if (val_ty->isVectorTy()) {
                 if (iterativeLoadStorePack(lanes_copy, val_ty, true, DL, ctx, builder, to_erase)) {
                     changed = true;
-                    errs() << "332";
                     continue;
                 }
             }
 
             std::vector<int> mem_index;
             if (!good_mem_ops(lanes_copy, DL, val_ty, mem_index)) {
-                errs() << "339";
                 continue;
             }
 
@@ -493,7 +477,6 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
                 }
             }
             if (base_lane < 0) {
-                errs() << "351";
                 continue;
             }
 
@@ -517,7 +500,6 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
             }
 
             changed = true;
-            errs() << "375";
             continue;
         }
 
@@ -579,21 +561,14 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
 
     for (Instruction *inst : to_erase) {
         if (!inst->use_empty()) {
-            errs() << "ERROR: instruction still has users!\n";
-            for (auto *U : inst->users()) {
-                errs() << "  user: " << *U << "\n";
-            }
         } else {
-            errs() << "erased: " << *inst << "\n";
             inst->eraseFromParent();
         }
         // inst->eraseFromParent();
     }
     
-    LLVMContext &new_ctx = F.getContext(); 
-
-    // Print the containing function to stderr
-    F.print(errs(), nullptr);
+    // LLVMContext &new_ctx = F.getContext(); 
+    // F.print(errs(), nullptr);
 
     return changed;
 }

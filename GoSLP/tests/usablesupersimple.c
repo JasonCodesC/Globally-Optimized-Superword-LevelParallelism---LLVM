@@ -10,14 +10,16 @@ void test_minimal_int(int *a, int *b, int *c) {
     c[0] = t0;
     c[1] = t1;
 
+    printf("z[0] = %d, z[1] = %d\n", c[0], c[1]);
+
     // === Pack #1 === (consumer)
     // Use-def chain in swapped order → requires lane permutation
-    // int u0 = t0 * 2;
-    // int u1 = t1 * 2;
+    int u0 = t0 * 2;
+    int u1 = t1 * 2;
 
     // // === Final explicit swapped output ===
-    // c[0] = u0;
-    // c[1] = u1;
+    c[0] = u0;
+    c[1] = u1;
 }
 
 int main() {

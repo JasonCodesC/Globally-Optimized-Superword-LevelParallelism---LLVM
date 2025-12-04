@@ -146,6 +146,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/FormatVariadic.h"
 
 using namespace llvm;
 
@@ -166,7 +167,7 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
 
     while (true) {
         ++iter;
-        errs() << "\n========== GoSLP iteration " << iter << " ==========\n";
+        errs() << "\n========== GoSLP iteration #" << iter << " on func " << F.getName() << " ==========\n";
 
         // 1) Collect legal 2-wide candidate packs
         CandidatePairs C = collectCandidatePairs(F, AA, MSSA);
@@ -216,21 +217,24 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
         }
 
         // Debug: prinlt costs
-        errs() << "Pack costs:\n";
+        errs() << "==================== Pack Costs ====================\n";
         for (size_t i = 0; i < PackCost.size(); ++i) {
-            errs() << "  Pack " << i << " cost = " << PackCost[i] << "\n";
+            errs() << formatv("  Pack {0,3} : {1,8:F2}\n", i, PackCost[i]);
         }
+        errs() << "===================================================\n";
 
         // 5) Solve ILP over packs
         std::vector<bool> Chosen = solveILP(C, PackCost, /*TimeLimitSeconds=*/120.0);
 
-        errs() << "Chosen packs:\n";
+        
+        errs() << "================= Chosen Packs (by ILP) ===============\n";
         bool AnyChosen = false;
         for (size_t i = 0; i < Chosen.size(); ++i) {
             errs() << "  Pack " << i << ": " << (Chosen[i] ? "YES" : "NO") << "\n";
             if (Chosen[i])
                 AnyChosen = true;
         }
+        errs() << "===================================================\n";
 
         if (!AnyChosen) {
             errs() << "ILP chose no packs; stopping.\n";

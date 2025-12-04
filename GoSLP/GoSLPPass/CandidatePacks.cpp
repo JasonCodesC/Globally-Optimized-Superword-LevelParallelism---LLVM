@@ -123,12 +123,8 @@ bool areIsomorphic(const Instruction *I1, const Instruction *I2) {
 //     return false;
 //   }
 
-//   errs() << "got here 1\n";
-
 //   if (!ElemTy->isSized())
 //     return false;
-
-//   errs() << "got here 2\n";
 
 //   APInt Offset(DL.getPointerSizeInBits(0), 0);
 
@@ -214,14 +210,12 @@ bool areAdjacentMemoryAccesses(const Instruction *I1, const Instruction *I2,
   if (!getAddrBaseAndOffset(I2, DL, Base2, Off2)) {
     return false;
   }
-  errs() << "Base 1 : " << *Base1 << " 2: " << *Base2 << "\n";
   if (!areLoadsEquivalent(I1, I2)) {
     return false;
   }
   // if (Base1 != Base2) {
   //   return false;
   // }
-  errs() << "got through this 22\n";
   // ensure they are different objects
   // if (AA.isNoAlias(MemoryLocation::get(I1), MemoryLocation::get(I2))) {
   //   return false;
@@ -239,7 +233,6 @@ bool areAdjacentMemoryAccesses(const Instruction *I1, const Instruction *I2,
   if (!ElemTy->isSized()) {
     return false;
   }
-  errs() << "got through this elemty\n";
   uint64_t ElemSize = DL.getTypeStoreSize(ElemTy);
   int64_t Diff = Off1 - Off2;
   if (Diff < 0) {
@@ -273,7 +266,6 @@ bool isTransitivelyDependent(Instruction *From, Instruction *To, MemorySSA &MSSA
     for (User *U : Cur->users()) {
       if (auto *UI = dyn_cast<Instruction>(U)) {
         if (Visited.insert(UI).second) {
-          errs() << "adding user: " << *U << "\n";
           Q.push(UI);
         }
       }
@@ -285,7 +277,6 @@ bool isTransitivelyDependent(Instruction *From, Instruction *To, MemorySSA &MSSA
     //     if (auto *MUOD = dyn_cast<MemoryUseOrDef>(MU)) {
     //       Instruction *MemI = MUOD->getMemoryInst();
     //       if (Visited.insert(MemI).second) {
-    //         errs() << "adding user: " << *MemI << "\n";
     //         Q.push(MemI);
     //       }
     //     }
@@ -352,29 +343,23 @@ bool isCandidateStatement(Instruction *I) {
 bool legalGoSLPPair(Instruction *I1, Instruction *I2, const DataLayout &DL,
     AAResults &AA, MemorySSA &MSSA) {
 
-  errs() << "I1: " << *I1 << " I2: " << *I2 << "\n";
   if (I1 == I2) {
     return false;
   }
-  errs() << "got1\n";
   if (!areIsomorphic(I1, I2)) {
     return false;
   }
-  errs() << "got2\n";
   if (!areIndependent(I1, I2, MSSA)) {
     return false;
   }
-  errs() << "got3\n";
   if (!areSchedulableTogether(I1, I2)) {
     return false;
   }
-  errs() << "got4\n";
   if (accessesMemory(I1) || accessesMemory(I2)) {
     if (!areAdjacentMemoryAccesses(I1, I2, DL, AA)) {
       return false;
     }
   }
-  errs() << "got5\n";
 
   return true;
 }
@@ -397,12 +382,10 @@ CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA
 
   // assign indices to all candidate statements in function order.
   for (BasicBlock &BB : F) {
-    errs() << "Looking at basic block " << BB << "\n";
     for (Instruction &I : BB) {
       if (!isCandidateStatement(&I)) {
         continue;
       }
-      errs() << "looking at instruction " << I << "\n";
       Index[&I] = Pos++;
     }
   }
@@ -417,11 +400,9 @@ CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA
       if (!isCandidateStatement(&I)) {
         continue;
       }
-      errs() << "adding to stmtsinbb\n";
       StmtsInBB.push_back(&I);
     }
     const uint32_t N = StmtsInBB.size();
-    errs() << "size " << StmtsInBB.size() << "\n";
     if (N < 2) {
       continue;
     }
@@ -432,7 +413,6 @@ CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA
         if (!legalGoSLPPair(I1, I2, DL, AA, MSSA)) {
           continue;
         }
-        errs() << "Calling add pack\n";
         addPack(Result, I1, I2);
       }
     }
