@@ -77,7 +77,7 @@ cmake --build build --target GoSLPPass
 
 Both baseline and GoSLP are compiled with `-O3 -fno-slp-vectorize -ffp-contract=off` to isolate this pass. Set `SKIP_BUILD=0` to rebuild the pass; use `SKIP_BUILD=1` for repeated timing runs.
 
-## Results (mean/median over multiple runs, ILP cap 60s; nested 800s)
+## Results: mean/median over five runs, ILP cap 60s (nested set to 800s)
 
 | Kernel (iters) | Baseline mean s | Baseline median s | GoSLP mean s | GoSLP median s | Mean speedup | Median speedup |
 |---|---|---|---|---|---|---|
