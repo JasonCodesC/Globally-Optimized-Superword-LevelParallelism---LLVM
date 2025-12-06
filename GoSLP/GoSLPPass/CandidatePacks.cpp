@@ -5,7 +5,6 @@ CanditdatePacks.cpp
 This file collects legal candidate packs via the methods and constraints specified in the GoSLP paper
 
 */
-#pragma once
 #include "CandidatePacks.hpp"
 #include "llvm/IR/Instruction.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -19,6 +18,8 @@ This file collects legal candidate packs via the methods and constraints specifi
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/DenseMap.h"
 using namespace llvm;
 
 // return true if load/store
@@ -97,6 +98,28 @@ bool areIsomorphic(const Instruction *I1, const Instruction *I2) {
       if (BO1->getOperand(k)->getType() != BO2->getOperand(k)->getType()) {
         return false;
       }
+    }
+    return true;
+  }
+  // fmuladd intrinsic calls
+  if (const auto *CI1 = dyn_cast<CallInst>(I1)) {
+    const auto *CI2 = dyn_cast<CallInst>(I2);
+    if (!CI2)
+      return false;
+    auto *F1 = CI1->getCalledFunction();
+    auto *F2 = CI2->getCalledFunction();
+    if (!F1 || !F2)
+      return false;
+    if (F1->getIntrinsicID() != Intrinsic::fmuladd ||
+        F2->getIntrinsicID() != Intrinsic::fmuladd)
+      return false;
+    if (CI1->getType() != CI2->getType())
+      return false;
+    if (CI1->arg_size() != CI2->arg_size())
+      return false;
+    for (unsigned i = 0; i < CI1->arg_size(); ++i) {
+      if (CI1->getArgOperand(i)->getType() != CI2->getArgOperand(i)->getType())
+        return false;
     }
     return true;
   }
@@ -213,13 +236,11 @@ bool areAdjacentMemoryAccesses(const Instruction *I1, const Instruction *I2,
   if (!areLoadsEquivalent(I1, I2)) {
     return false;
   }
-  // if (Base1 != Base2) {
-  //   return false;
-  // }
-  // ensure they are different objects
-  // if (AA.isNoAlias(MemoryLocation::get(I1), MemoryLocation::get(I2))) {
-  //   return false;
-  // }
+  // If AA can prove they do not alias, bail; otherwise allow possibly-aliasing
+  // bases (this is important in unrolled loops where pointers compare
+  // differently but still walk the same underlying array).
+  if (AA.isNoAlias(MemoryLocation::get(I1), MemoryLocation::get(I2)))
+    return false;
 
   // ensure elements are adjacent
   Type *ElemTy = nullptr;
@@ -262,7 +283,7 @@ bool isTransitivelyDependent(Instruction *From, Instruction *To, MemorySSA &MSSA
     if (Cur == To)
       return true;
 
-    // push users to q
+    // push users to q (SSA def-use)
     for (User *U : Cur->users()) {
       if (auto *UI = dyn_cast<Instruction>(U)) {
         if (Visited.insert(UI).second) {
@@ -271,17 +292,25 @@ bool isTransitivelyDependent(Instruction *From, Instruction *To, MemorySSA &MSSA
       }
     }
 
-    // // push users to q
-    // if (MemoryAccess *MA = MSSA.getMemoryAccess(Cur)) {
-    //   for (User *MU : MA->users()) {
-    //     if (auto *MUOD = dyn_cast<MemoryUseOrDef>(MU)) {
-    //       Instruction *MemI = MUOD->getMemoryInst();
-    //       if (Visited.insert(MemI).second) {
-    //         Q.push(MemI);
-    //       }
-    //     }
-    //   }
-    // }
+    // If this instruction writes to memory, follow the MemorySSA def-use edges
+    // that it actually clobbers. This captures store->load/store dependences
+    // without treating unrelated reads as dependent.
+    if (Cur->mayWriteToMemory()) {
+      if (MemoryAccess *MA = MSSA.getMemoryAccess(Cur)) {
+        if (MemorySSAWalker *W = MSSA.getWalker()) {
+          for (User *MU : MA->users()) {
+            if (auto *MUOD = dyn_cast<MemoryUseOrDef>(MU)) {
+              if (W->getClobberingMemoryAccess(MUOD) != MA)
+                continue;
+              Instruction *MemI = MUOD->getMemoryInst();
+              if (Visited.insert(MemI).second) {
+                Q.push(MemI);
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   return false;
@@ -289,13 +318,38 @@ bool isTransitivelyDependent(Instruction *From, Instruction *To, MemorySSA &MSSA
 
 // ensure no dependence either way.
 bool areIndependent(Instruction *I1, Instruction *I2, MemorySSA &MSSA) {
-  if (isTransitivelyDependent(I1, I2, MSSA)) {
+  if (isTransitivelyDependent(I1, I2, MSSA) ||
+      isTransitivelyDependent(I2, I1, MSSA)) {
     return false;
   }
-  if (isTransitivelyDependent(I2, I1, MSSA)) {
-    return false;
+
+  // If neither writes to memory, SSA def-use is the only dependency.
+  if (!I1->mayWriteToMemory() && !I2->mayWriteToMemory())
+    return true;
+
+  MemoryAccess *MA1 = MSSA.getMemoryAccess(I1);
+  MemoryAccess *MA2 = MSSA.getMemoryAccess(I2);
+  if (!MA1 || !MA2)
+    return true;
+
+  if (MemorySSAWalker *W = MSSA.getWalker()) {
+    if (W->getClobberingMemoryAccess(MA2) == MA1)
+      return false;
+    if (W->getClobberingMemoryAccess(MA1) == MA2)
+      return false;
   }
+
   return true;
+}
+
+// Find the next instruction in the same block that is a candidate statement.
+static const Instruction *nextCandidate(const Instruction *I) {
+  const Instruction *Cur = I;
+  while ((Cur = Cur->getNextNonDebugInstruction())) {
+    if (isCandidateStatement(const_cast<Instruction *>(Cur)))
+      return Cur;
+  }
+  return nullptr;
 }
 
 // goSLP states that instructions must be in the same BB to be paired
@@ -336,6 +390,13 @@ bool isCandidateStatement(Instruction *I) {
     return isScalarOrVectorIntOrFP(Ty);
   }
 
+  if (auto *CI = dyn_cast<CallInst>(I)) {
+    if (Function *F = CI->getCalledFunction()) {
+      if (F->getIntrinsicID() == Intrinsic::fmuladd)
+        return true;
+    }
+  }
+
   return false;
 }
 
@@ -366,6 +427,9 @@ bool legalGoSLPPair(Instruction *I1, Instruction *I2, const DataLayout &DL,
 
 
 // main function
+static void widenPacks(CandidatePairs &C, const DataLayout &DL, AAResults &AA,
+                       unsigned MaxWidth = 32);
+
 CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA) {
 
   CandidatePairs Result;
@@ -406,28 +470,271 @@ CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA
     if (N < 2) {
       continue;
     }
+  const uint32_t MaxNeighborDistance = 1; // only immediate neighbors to curb explosion
     for (uint32_t i = 0; i < N; ++i) {
       Instruction *I1 = StmtsInBB[i];
-      for (uint32_t j = i + 1; j < N; ++j) {
+      uint32_t jEnd = std::min<uint32_t>(N, i + 1 + MaxNeighborDistance);
+      for (uint32_t j = i + 1; j < jEnd; ++j) {
         Instruction *I2 = StmtsInBB[j];
-        if (!legalGoSLPPair(I1, I2, DL, AA, MSSA)) {
+        if (!areIsomorphic(I1, I2))
           continue;
-        }
+        if (!areIndependent(I1, I2, MSSA))
+          continue;
+        if (!areSchedulableTogether(I1, I2))
+          continue;
+        if ((accessesMemory(I1) || accessesMemory(I2)) &&
+            !areAdjacentMemoryAccesses(I1, I2, DL, AA))
+          continue;
+
         addPack(Result, I1, I2);
       }
     }
   }
 
+  // Pair by opcode (captures mul/add separated by other instructions) in each BB.
+  for (BasicBlock &BB : F) {
+    DenseMap<unsigned, std::vector<Instruction *>> OpsToInsts;
+    std::vector<Instruction *> FMAInsts;
+    for (Instruction &I : BB) {
+      if (!isCandidateStatement(&I))
+        continue;
+      if (auto *BO = dyn_cast<BinaryOperator>(&I)) {
+        OpsToInsts[BO->getOpcode()].push_back(&I);
+      } else if (auto *CI = dyn_cast<CallInst>(&I)) {
+        if (auto *F = CI->getCalledFunction()) {
+          if (F->getIntrinsicID() == Intrinsic::fmuladd)
+            FMAInsts.push_back(&I);
+        }
+      }
+    }
+
+    auto pairConsecutive = [&](std::vector<Instruction *> &Vec) {
+      if (Vec.size() < 2)
+        return;
+      for (size_t i = 0; i + 1 < Vec.size(); ++i) {
+        Instruction *A = Vec[i];
+        Instruction *B = Vec[i + 1];
+        if (legalGoSLPPair(A, B, DL, AA, MSSA))
+          addPack(Result, A, B);
+      }
+    };
+
+    for (auto &KV : OpsToInsts)
+      pairConsecutive(KV.second);
+    pairConsecutive(FMAInsts);
+  }
+
+  // Additional pass: build contiguous load/store packs per base/offset to
+  // catch unrolled loop patterns.
+  for (BasicBlock &BB : F) {
+    struct MemAccessInfo {
+      Instruction *I;
+      const Value *Base;
+      int64_t Offset;
+      uint64_t ElemSize;
+    };
+    std::vector<MemAccessInfo> Loads;
+    std::vector<MemAccessInfo> Stores;
+
+    for (Instruction &I : BB) {
+      const Value *Base = nullptr;
+      int64_t Off = 0;
+      if (!getAddrBaseAndOffset(&I, DL, Base, Off))
+        continue;
+      uint64_t ElemSize = 0;
+      if (auto *L = dyn_cast<LoadInst>(&I))
+        ElemSize = DL.getTypeStoreSize(L->getType());
+      else if (auto *S = dyn_cast<StoreInst>(&I))
+        ElemSize = DL.getTypeStoreSize(S->getValueOperand()->getType());
+      else
+        continue;
+      if (ElemSize == 0)
+        continue;
+      MemAccessInfo Info{&I, Base, Off, ElemSize};
+      if (isa<LoadInst>(&I))
+        Loads.push_back(Info);
+      else
+        Stores.push_back(Info);
+    }
+
+    auto buildContiguousPairs = [&](std::vector<MemAccessInfo> &Vec) {
+      llvm::stable_sort(Vec, [](const MemAccessInfo &A, const MemAccessInfo &B) {
+        if (A.Base != B.Base)
+          return A.Base < B.Base;
+        return A.Offset < B.Offset;
+      });
+      for (size_t idx = 1; idx < Vec.size(); ++idx) {
+        auto &Prev = Vec[idx - 1];
+        auto &Cur = Vec[idx];
+        if (Prev.Base != Cur.Base)
+          continue;
+        if (Prev.ElemSize != Cur.ElemSize)
+          continue;
+        if (Cur.Offset - Prev.Offset != static_cast<int64_t>(Prev.ElemSize))
+          continue;
+        addPack(Result, Prev.I, Cur.I);
+      }
+    };
+
+    buildContiguousPairs(Loads);
+    buildContiguousPairs(Stores);
+  }
+
+  // Clamp pack count to keep solver/emitter manageable.
+  const size_t PackLimit = 64;
+  if (Result.Packs.size() > PackLimit) {
+    auto Packs = Result.Packs;
+    Result.Packs.assign(Packs.begin(), Packs.begin() + PackLimit);
+    Result.InstToCandidates.clear();
+    for (size_t idx = 0; idx < Result.Packs.size(); ++idx) {
+      CandidateId Id{static_cast<uint32_t>(Result.Packs[idx].size()),
+                     static_cast<uint32_t>(idx)};
+      for (const Instruction *Inst : Result.Packs[idx]) {
+        Result.InstToCandidates[Inst].push_back(Id);
+      }
+    }
+  }
+
+  // Iterative widening over the collected packs.
+  if (Result.Packs.size() <= 256)
+    widenPacks(Result, DL, AA, /*MaxWidth=*/32);
+
   return Result;
+}
+
+
+// Iteratively widen packs: start from existing packs and merge same-width
+// isomorphic packs in the same block until no change or we hit MaxWidth.
+static void widenPacks(CandidatePairs &C, const DataLayout &DL, AAResults &AA,
+                       unsigned MaxWidth) {
+  bool changed = true;
+  const size_t MaxPackCount = 2000;
+  while (changed) {
+    changed = false;
+    std::vector<std::vector<const Instruction *>> NewPacks;
+    size_t mergeBudget = 128; // avoid blow-up
+
+    if (C.Packs.size() > MaxPackCount)
+      break;
+
+    for (size_t i = 0; i < C.Packs.size(); ++i) {
+      const auto &P1 = C.Packs[i];
+      if (P1.empty())
+        continue;
+      unsigned W = P1.size();
+      if (W >= MaxWidth)
+        continue;
+      const BasicBlock *BB = P1[0]->getParent();
+      if (!BB)
+        continue;
+      // Only widen packs whose instructions are all isomorphic to peers; we
+      // rely on areIsomorphic per-lane below.
+
+      for (size_t j = i + 1; j < C.Packs.size(); ++j) {
+        const auto &P2 = C.Packs[j];
+        if (P2.size() != W)
+          continue;
+        if (P2[0]->getParent() != BB)
+          continue;
+        if (mergeBudget == 0)
+          break;
+
+        bool same = true;
+        for (size_t k = 0; k < P1.size(); ++k) {
+          if (!areIsomorphic(P1[k], P2[k]) || P1[k] == P2[k]) {
+            same = false;
+            break;
+          }
+        }
+        if (!same)
+          continue;
+
+        bool overlap = false;
+        for (const Instruction *A : P1) {
+          if (llvm::is_contained(P2, A)) {
+            overlap = true;
+            break;
+          }
+        }
+        if (overlap)
+          continue;
+
+        // Keep widening deterministic: require P1 precedes P2 within a small
+        // candidate gap window inside the same block.
+        const unsigned MaxCandidateGap = 3;
+        unsigned GapCount = 0;
+        const Instruction *Cur = P1.back();
+        while ((Cur = nextCandidate(Cur))) {
+          ++GapCount;
+          if (Cur == P2.front())
+            break;
+          if (GapCount > MaxCandidateGap)
+            break;
+        }
+        if (Cur != P2.front())
+          continue;
+
+        // For memory instructions, enforce a contiguous base/offset chain so we
+        // do not merge unrelated accesses.
+        if (accessesMemory(P1.back()) || accessesMemory(P2.front())) {
+          if (!accessesMemory(P1.back()) || !accessesMemory(P2.front()))
+            continue;
+          if (!areIsomorphic(P1.front(), P2.front()))
+            continue;
+          if (!areAdjacentMemoryAccesses(P1.back(), P2.front(), DL, AA))
+            continue;
+        }
+
+        std::vector<const Instruction *> widened;
+        widened.reserve(P1.size() + P2.size());
+        widened.insert(widened.end(), P1.begin(), P1.end());
+        widened.insert(widened.end(), P2.begin(), P2.end());
+        NewPacks.push_back(std::move(widened));
+        if (--mergeBudget == 0)
+          break;
+      }
+      if (mergeBudget == 0)
+        break;
+    }
+
+    if (!NewPacks.empty()) {
+      changed = true;
+      for (auto &NP : NewPacks) {
+        uint32_t Index = C.Packs.size();
+        C.Packs.push_back(NP);
+        CandidateId Id{static_cast<uint32_t>(NP.size()), Index};
+        for (const Instruction *Inst : NP) {
+          C.InstToCandidates[Inst].push_back(Id);
+        }
+      }
+    }
+  }
+
+  // Final clamp to keep solver manageable after widening.
+  const size_t TotalLimit = 128;
+  if (C.Packs.size() > TotalLimit) {
+    auto Packs = C.Packs;
+    C.Packs.assign(Packs.begin(), Packs.begin() + TotalLimit);
+    C.InstToCandidates.clear();
+    for (size_t idx = 0; idx < C.Packs.size(); ++idx) {
+      CandidateId Id{static_cast<uint32_t>(C.Packs[idx].size()),
+                     static_cast<uint32_t>(idx)};
+      for (const Instruction *Inst : C.Packs[idx]) {
+        C.InstToCandidates[Inst].push_back(Id);
+      }
+    }
+  }
 }
 
 
 void printCandidatePairs(const CandidatePairs &CP) {
     errs() << "===== CandidatePairs =====\n";
 
-    // ---- Print Packs ----
-    errs() << "Packs (" << CP.Packs.size() << "):\n";
-    for (size_t i = 0; i < CP.Packs.size(); ++i) {
+    // ---- Print Packs (truncated) ----
+    const size_t Limit = 80;
+    errs() << "Packs (" << CP.Packs.size() << "): showing first "
+           << std::min(Limit, CP.Packs.size()) << "\n";
+    for (size_t i = 0; i < CP.Packs.size() && i < Limit; ++i) {
         errs() << "  Pack " << i << ":\n";
         for (const Instruction *Inst : CP.Packs[i]) {
             errs() << "    ";
@@ -438,26 +745,10 @@ void printCandidatePairs(const CandidatePairs &CP) {
             errs() << "\n";
         }
     }
+    if (CP.Packs.size() > Limit)
+      errs() << "  ... (" << (CP.Packs.size() - Limit) << " more packs elided)\n";
 
-    // ---- Print InstToCandidates ----
-    errs() << "InstToCandidates (" << CP.InstToCandidates.size() << "):\n";
-    for (const auto &Entry : CP.InstToCandidates) {
-        const Instruction *Inst = Entry.first;
-        const std::vector<CandidateId> &Candidates = Entry.second;
-
-        errs() << "  Instruction: ";
-        if (Inst)
-            Inst->print(errs());
-        else
-            errs() << "<null inst>";
-        errs() << "\n";
-
-        errs() << "    Candidates (" << Candidates.size() << "):\n";
-        for (const CandidateId &CID : Candidates) {
-            errs() << "      CandidateId { Width=" << CID.Width
-                   << ", Index=" << CID.Index << " }\n";
-        }
-    }
-
+    // ---- Print InstToCandidates (summary) ----
+    errs() << "InstToCandidates (" << CP.InstToCandidates.size() << ")\n";
     errs() << "==========================\n";
 }

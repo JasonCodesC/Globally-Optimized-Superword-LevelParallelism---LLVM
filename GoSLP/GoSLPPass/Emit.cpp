@@ -28,12 +28,6 @@ bool good_mem_ops(const std::vector<const Instruction *> &lanes, const DataLayou
         offs[i] = byte_offset;
     }
 
-    // const Value *base0 = bases[0];
-    // for (int i = 1; i < width; ++i) {
-    //     if (bases[i] != base0) {
-    //         return false;
-    //     }
-    // }
 
     int off_min = offs[0];
     for (int i = 1; i < width; ++i) {
@@ -187,28 +181,36 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
     const DataLayout &DL = M->getDataLayout();
     LLVMContext &ctx = F.getContext();
 
-    for (int i = 0; i < C.Packs.size(); ++i) {
-        if (!Chosen[i]) {
-            continue;
-        }
+    // Emit load/store packs first, then arithmetic, to keep dominance sane.
+    std::vector<int> worklist;
+    for (int i = 0; i < static_cast<int>(C.Packs.size()); ++i) {
+        if (Chosen[i])
+            worklist.push_back(i);
+    }
+    auto isLoadOrStorePack = [](const std::vector<const Instruction *> &lanes) {
+        return llvm::all_of(lanes, [](const Instruction *I) { return isa<LoadInst>(I); }) ||
+               llvm::all_of(lanes, [](const Instruction *I) { return isa<StoreInst>(I); });
+    };
+    std::stable_partition(worklist.begin(), worklist.end(), [&](int idx) {
+        return isLoadOrStorePack(C.Packs[idx]);
+    });
 
-        const auto &lanes = C.Packs[i];
+    for (int idx : worklist) {
+        const auto &lanes = C.Packs[idx];
         if (lanes.empty())
             continue;
 
- 
         bool all_binop = true;
         bool all_load  = true;
         bool all_store = true;
         for (const Instruction *inst : lanes) {
             const Instruction *ni = const_cast<Instruction *>(inst);
             if (!isa<BinaryOperator>(ni))
-                {all_binop = false;}
-            if (!isa<LoadInst>(ni)) {
-                {all_load = false;}
-            }
+                all_binop = false;
+            if (!isa<LoadInst>(ni))
+                all_load = false;
             if (!isa<StoreInst>(ni))
-                {all_store = false;}
+                all_store = false;
         }
 
         if (!all_binop && !all_load && !all_store) {
@@ -216,13 +218,13 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
         }
 
         std::vector<const Instruction *> lanes_copy = lanes;
-        auto perm = LanePerm.find((int)i);
+        auto perm = LanePerm.find(idx);
         if (perm != LanePerm.end() && perm->second.size() == lanes_copy.size()) {
             const Permutation &P = perm->second;
             std::vector<const Instruction *> permuted(lanes_copy.size());
             for (size_t j = 0; j < lanes_copy.size(); ++j) {
                 int src = P[j];
-                if (src < lanes_copy.size()) {
+                if (src < static_cast<int>(lanes_copy.size())) {
                     permuted[j] = lanes_copy[src];
                 } 
                 else {
@@ -233,33 +235,16 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
         }
         
         Instruction *insert_pt = const_cast<Instruction *>(lanes_copy[0]);
-        BasicBlock *commonBB = const_cast<Instruction*>(lanes_copy[0])->getParent();
         for (const Instruction *curr : lanes_copy) {
             Instruction *inst = const_cast<Instruction *>(curr);
-            if (inst->getParent() == insert_pt->getParent() && insert_pt->comesBefore(inst)) {
+            if (inst->getParent() == insert_pt->getParent() && inst->comesBefore(insert_pt)) {
                 insert_pt = inst;
             }
         }
 
-        Instruction *latestOperand = nullptr;
-        bool crossBlockOperand = false; // if any operand is in a different BB, abort conservatively
-        for (const Instruction *curr : lanes_copy) {
-            const Instruction *inst = curr;
-            for (unsigned k = 0; k < inst->getNumOperands(); ++k) {
-                Value *op = inst->getOperand(k);
-                if (Instruction *opInst = dyn_cast<Instruction>(op)) {
-                    if (opInst->getParent() != commonBB) {
-                        crossBlockOperand = true;
-                        break;
-                    }
-                    if (!latestOperand) latestOperand = opInst;
-                    else if (latestOperand->comesBefore(opInst)) latestOperand = opInst;
-                }
-            }
-            if (crossBlockOperand) break;
-        }
+        Instruction *insertBefore = insert_pt;
 
-        IRBuilder<> builder(insert_pt);
+        IRBuilder<> builder(insertBefore);
         int width = lanes_copy.size();
         if (all_binop) {
             auto *bin_op = cast<BinaryOperator>(const_cast<Instruction *>(lanes_copy[0]));
@@ -307,137 +292,33 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
                 }
             }
 
-            // errs() << "InsertPt: " << *insert_pt << " in BB: " << insert_pt->getParent()->getName() << "\n";
-            // errs() << "Latestoperand: " << *latestOperand << " in BB: " << latestOperand->getParent()->getName() << "\n";
-            // for (int lane = 0; lane < width; ++lane) {
-            //     Instruction *I = const_cast<Instruction*>(lanes_copy[lane]);
-            //     errs() << "Lane["<<lane<<"]: " << *I << " in BB: " << I->getParent()->getName() << "\n";
-            //     errs() << "  operand0: " << *I->getOperand(0) << "\n";
-            //     errs() << "  operand1: " << *I->getOperand(1) << "\n";
-            // }
+            Instruction *vec_bin_op = cast<Instruction>(
+                builder.CreateBinOp(bin_op->getOpcode(), vec_op0, vec_op1, "goslp.vec"));
 
-            Instruction *IP = insert_pt; // your chosen insertion instruction
-            for (const Instruction *laneInst : lanes_copy) {
-            const Instruction *old = laneInst;
-            // for (auto *U : old->users()) {
-            //     if (const Instruction *userI = dyn_cast<Instruction>(U)) {
-            //     errs() << "User of " << *old << " -> " << *userI << " in BB: " 
-            //             << userI->getParent()->getName() << "\n";
-            //     // quick local check if in same BB and before/after:
-            //     if (userI->getParent() == IP->getParent()) {
-            //         if (userI->comesBefore(IP))
-            //         errs() << "  user comes BEFORE insert_pt -> PROBLEM\n";
-            //     } else {
-            //         errs() << "  user in different BB\n";
-            //     }
-            //     } else {
-            //     errs() << "  non-instruction user\n";
-            //     }
-            // }
-            }
-
-            Instruction *vec_bin_op = cast<Instruction>(builder.CreateBinOp(bin_op->getOpcode(), 
-                vec_op0, vec_op1, "goslp.vec"));
-
-      
-            Instruction *new_insert_pt = insert_pt;
-            if (latestOperand && new_insert_pt->comesBefore(latestOperand)) {
-                new_insert_pt = latestOperand;
-            }
-            Instruction *insertBefore = new_insert_pt->getNextNonDebugInstruction();
-            if (!insertBefore) {
-                // If at the end of the block, insert before the terminator.
-                insertBefore = new_insert_pt->getParent()->getTerminator();
-            }
-            IRBuilder<> builder(insertBefore); // Builder for vector op and prologue
-
-            // errs() << "Vectorization Insert Before: " << *insertBefore << "\n";
-            // ... (Your debug prints) ...
-
-            // 2. Create the Vector Operation using the safe builder
-            // Instruction *vec_bin_op = cast<Instruction>(builder.CreateBinOp(bin_op->getOpcode(), 
-                // vec_op0, vec_op1, "goslp.vec"));
-
-      
-            // 3. Create the Epilogue (Extracts) at the original instruction's location
+            // Insert scalar extracts at the original instruction sites to
+            // guarantee dominance over all original uses.
             for (int lane = 0; lane < width; ++lane) {
                 Instruction *old_inst = const_cast<Instruction *>(lanes_copy[lane]);
+                IRBuilder<> extBuilder(old_inst);
 
-                // The local builder must insert the extract *after* the vector instruction.
-                // The correct placement for the extract is *before* the first user of old_inst
-                // and *after* the vec_bin_op.
-
-                // This is the correct pattern: insert the extract right before the old instruction.
-                IRBuilder<> localBuilder(old_inst);
-
-                Value *replacement = nullptr;
+                Value *laneVal = nullptr;
                 if (sub_width == 1) {
                     int wide_index = lane;
-                    replacement = localBuilder.CreateExtractElement(
-                        // ERROR: If old_inst is before vec_bin_op, this violates dominance.
-                        vec_bin_op, 
-                        ConstantInt::get(Type::getInt32Ty(ctx), wide_index),
-                        "goslp.ext");
-
-                    // FIX: If the extract is placed before the definition (vec_bin_op),
-                    // move the extract to a point that dominates it, i.e., immediately after vec_bin_op.
-                    // errs() << "X " << *replacement << *vec_bin_op << isa<Instruction>(replacement) << cast<Instruction>(replacement)->comesBefore(vec_bin_op) << "\n";
-                    if (isa<Instruction>(replacement)) {
-                        // errs() << "we are here\n";
-                        cast<Instruction>(replacement)->moveAfter(vec_bin_op);
-                        // The builder needs to be reset for subsequent extracts if this move affects instruction ordering.
-                        // However, since we are replacing all uses of old_inst, this simple move is fine.
-                        SmallVector<Instruction*> users_to_move;
-                        for (User *U : old_inst->users()) {
-                            if (Instruction *userI = dyn_cast<Instruction>(U)) {
-                                // Optional: only same BB users
-                                users_to_move.push_back(userI);
-                            }
-                        }
-                        
-                        for (Instruction *I : users_to_move) {
-                            I->moveAfter(cast<Instruction>(replacement));
-                        }
-                    } else {
-                        // SmallVector<Instruction*> users_to_move;
-                        // for (User *U : old_inst->users()) {
-                        //     if (Instruction *userI = dyn_cast<Instruction>(U)) {
-                        //         // Optional: only same BB users
-                        //         users_to_move.push_back(userI);
-                        //     }
-                        // }
-
-                        // for (Instruction *I : users_to_move) {
-                        //     I->moveAfter(cast<Instruction>(replacement));
-                        // }
-
-                        SmallVector<Constant *, 8> mask_elems;
-                        mask_elems.reserve(sub_width);
-                        for (int j = 0; j < sub_width; ++j) {
-                            int wide_index = lane * sub_width + j;
-                            mask_elems.push_back(ConstantInt::get(Type::getInt32Ty(ctx), wide_index));
-                        }
-                        Constant *mask = ConstantVector::get(mask_elems);
-                        Value *undef_vec = UndefValue::get(wide_vec_ty);
-                        replacement = localBuilder.CreateShuffleVector(vec_bin_op, undef_vec, mask, "goslp.subvec");
+                    laneVal = extBuilder.CreateExtractElement(
+                        vec_bin_op, ConstantInt::get(Type::getInt32Ty(ctx), wide_index), "goslp.ext");
+                } else {
+                    SmallVector<Constant *, 8> mask_elems;
+                    mask_elems.reserve(sub_width);
+                    for (int j = 0; j < sub_width; ++j) {
+                        int wide_index = lane * sub_width + j;
+                        mask_elems.push_back(ConstantInt::get(Type::getInt32Ty(ctx), wide_index));
                     }
+                    Constant *mask = ConstantVector::get(mask_elems);
+                    Value *undef_vec = UndefValue::get(wide_vec_ty);
+                    laneVal = extBuilder.CreateShuffleVector(vec_bin_op, undef_vec, mask, "goslp.subvec");
                 }
 
-                old_inst->replaceAllUsesWith(replacement);
-
-                // SmallVector<Instruction*> users_to_move;
-                // for (User *U : replacement->users()) {
-                //     if (Instruction *userI = dyn_cast<Instruction>(U)) {
-                //         if (userI->getParent() == vec_bin_op->getParent()) {
-                //             users_to_move.push_back(userI);
-                //         }
-                //     }
-                // }
-
-                // for (Instruction *I : users_to_move) {
-                //     I->moveAfter(vec_bin_op);
-                // }
-
+                old_inst->replaceAllUsesWith(laneVal);
                 to_erase.push_back(old_inst);
             }
             changed = true;

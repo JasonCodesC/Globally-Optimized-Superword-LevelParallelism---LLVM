@@ -24,7 +24,7 @@
 using namespace llvm;
 
 struct CandidateId {
-  uint32_t Width;  // always 2
+  uint32_t Width;  // current pack width
   uint32_t Index;  // index
 };
 
