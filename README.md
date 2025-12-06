@@ -13,22 +13,18 @@ GoSLP aims to take a more optimized approach of Superword Level Parallelism than
 ```text
 /project-root
 │── /GoSLP
-│   │   ├── CMakeLists.txt          # For compilation
-│   │   ├── run.sh                  # Script to run
-│   │   ├── /tests                   # A folder of C programs for tests
-│   │   ├── /testPass                # A folder for the test passes
-│   │   ├── /GoSLPPass
-│   │   │   ├── CandidatePacks.cpp      # Find Legal Packs
-│   │   │   ├── CMakeLists.txt          # For compilation
-│   │   │   ├── Emit.cpp                # Rewrite IR
-│   │   │   ├── GoSLPPass.cpp           # Pass that brings all the logic together
-│   │   │   ├── ILP.cpp                 # ILP to choose which packs to keep
-│   │   │   ├── PermuteDP.cpp           # DP to pick lane orders
-│   │   │   ├── ShuffleCost.cpp         # Shuffle Cost model
-│   │   │   └── VecGraph.cpp            # Dependency Graph of Packs
-│── README.md  # Documentation
-│── .gitignore 
-
+│   │   ├── CMakeLists.txt          # build entry for pass + bench
+│   │   ├── /bench                  # bench.cpp, bench.sh
+│   │   └── /GoSLPPass              # pass sources
+│   │       ├── CandidatePacks.cpp
+│   │       ├── Emit.cpp
+│   │       ├── GoSLPPass.cpp
+│   │       ├── ILP.cpp
+│   │       ├── PermuteDP.cpp
+│   │       ├── ShuffleCost.cpp
+│   │       └── VecGraph.cpp
+│── README.md
+│── .gitignore
 ```
 
 ## Overview of GoSLP
@@ -41,7 +37,7 @@ GoSLP takes advantage of SIMD instructions. In LLVM we use greedy hueristics whe
 
 ### CandidatePacks.cpp:
 
-In this file we find all of the candidate packs inside of a function. We follow the GoSLP paper pretty strictly and ensure that any candidate pack is isomorphic, has no dependences between the two, are in the same basic block, and access adjacent memory locations if they are load/store instructions. We also ensure that the two instructions are the same types, in this implimentation we are limited to integers, floating point numbers, and vector types (this plays into iterative widening). This file then returns a CandidatePairs object to the main pass which contains a vector of the instruction packs along with a hash map from each instruction to a vector of CandidateId objects which contains the width and index of the candidates. But all you really need to know is that this maps each instruction to a list of all the candidate packs that this instruction participates in so the ILP can find the best one.
+Enumerates legal packs (isomorphic ops, no internal dependences, same block, adjacent loads/stores). Builds the CandidatePairs structure mapping each instruction to the packs it can join so the ILP can choose among them.
 
 ### VecGraph.cpp:
 
@@ -83,12 +79,12 @@ Both baseline and GoSLP are compiled with `-O3 -fno-slp-vectorize -ffp-contract=
 
 ## Results (mean/median over multiple runs, ILP cap 60s; nested 800s)
 
-| Kernel (iters) | Baseline mean µs | Baseline median µs | GoSLP mean µs | GoSLP median µs | Mean speedup | Median speedup |
+| Kernel (iters) | Baseline mean s | Baseline median s | GoSLP mean s | GoSLP median s | Mean speedup | Median speedup |
 |---|---|---|---|---|---|---|
-| vec4_add (2e10) | 23,047,046 | 23,102,339 | 20,154,191 | 20,820,032 | ~12.6% | ~9.9% |
-| saxpy3 (2e9) | 6,226,196 | 6,179,942 | 6,080,081 | 6,024,897 | ~2.35% | ~2.51% |
-| dot64 (2e8) | 6,144,559 | 6,392,963 | 5,241,463 | 5,371,704 | ~14.7% | ~16.0% |
-| quad_loops (nested, 500) | 6,577,738 | 6,555,093 | 6,472,756 | 6,470,783 | ~1.6% | ~1.3% |
+| vec4_add (2e10) | 23.047046 | 23.102339 | 20.154191 | 20.820032 | ~12.6% | ~9.9% |
+| saxpy3 (2e9) | 6.226196 | 6.179942 | 6.080081 | 6.024897 | ~2.35% | ~2.51% |
+| dot64 (2e8) | 6.144559 | 6.392963 | 5.241463 | 5.371704 | ~14.7% | ~16.0% |
+| nested (500) | 6.577738 | 6.555093 | 6.472756 | 6.470783 | ~1.6% | ~1.3% |
 
 Checksums matched for all runs (Shows Program Correctness ).
 
