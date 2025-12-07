@@ -54,16 +54,6 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
         ShuffleCost SC = createShuffleCostCalculator(F, TTI, C);
 
         // 4) Build per-pack cost vector for ILP
-        //
-        //    We want: minimize sum_i PackCost[i] * x_i
-        //    with PackCost[i] negative when vectorizing that pack is beneficial.
-        //
-        //    Refined model:
-        //      PackCost[i] = pack_cost + unpack_cost - op_benefit
-        //
-        //    where op_benefit estimates scalar-cost*width - vector-cost for the
-        //    packed instruction opcode. If we cannot model a benefit, we leave
-        //    it small so the pack is only chosen when pack/unpack are cheap.
         std::vector<double> PackCost(C.Packs.size(), 0.0);
 
         auto estimateOpBenefit = [&](const Instruction *I, unsigned Width) -> double {
@@ -85,17 +75,20 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
                 unsigned Opc = I->getOpcode();
                 ScalarCost = TTI.getArithmeticInstrCost(Opc, ElemTy, CostKind);
                 VectorCost = TTI.getArithmeticInstrCost(Opc, VecTy, CostKind);
-            } else if (isa<LoadInst>(I) || isa<StoreInst>(I)) {
+            } 
+            else if (isa<LoadInst>(I) || isa<StoreInst>(I)) {
                 auto *VecTy = FixedVectorType::get(ElemTy, Width);
                 Align Alignment = DL.getPrefTypeAlign(ElemTy);
                 if (isa<LoadInst>(I)) {
                     ScalarCost = TTI.getMemoryOpCost(Instruction::Load, ElemTy, Alignment, 0, CostKind);
                     VectorCost = TTI.getMemoryOpCost(Instruction::Load, VecTy, Alignment, 0, CostKind);
-                } else {
+                } 
+                else {
                     ScalarCost = TTI.getMemoryOpCost(Instruction::Store, ElemTy, Alignment, 0, CostKind);
                     VectorCost = TTI.getMemoryOpCost(Instruction::Store, VecTy, Alignment, 0, CostKind);
                 }
-            } else {
+            } 
+            else {
                 return 0.0;
             }
 
@@ -109,25 +102,22 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
             N.PackIdx = i;
             N.pack = C.Packs[i];
 
-            InstructionCost packCostIC   = SC.getPackCost(N);
+            InstructionCost packCostIC = SC.getPackCost(N);
             InstructionCost unpackCostIC = SC.getUnpackCost(N);
 
-            int pack_val   = packCostIC.isValid()   ? static_cast<int>(packCostIC.getValue())   : 0;
+            int pack_val = packCostIC.isValid() ? static_cast<int>(packCostIC.getValue()) : 0;
             int unpack_val = unpackCostIC.isValid() ? static_cast<int>(unpackCostIC.getValue()) : 0;
 
-            int width = static_cast<int>(N.pack.size()); // should be 2 here
+            int width = static_cast<int>(N.pack.size());
             double vecBenefit = estimateOpBenefit(N.pack[0], width);
-            // If TTI can't show a win, give a moderate per-lane benefit to let
-            // packs proceed while still requiring pack+unpack to be outweighed.
             double adjustedBenefit = vecBenefit;
-            if (adjustedBenefit <= 0.0)
+            if (adjustedBenefit <= 0.0) {
                 adjustedBenefit = 1.5 * static_cast<double>(width);
+            }
 
-            // Smaller is better; negative means "good to take".
             PackCost[i] = static_cast<double>(pack_val + unpack_val) - adjustedBenefit;
         }
 
-        // Debug: prinlt costs
         // errs() << "==================== Pack Costs ====================\n";
         // const size_t CostPrintLimit = 64;
         // for (size_t i = 0; i < PackCost.size() && i < CostPrintLimit; ++i) {
@@ -138,26 +128,26 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
         // errs() << "===================================================\n";
 
         // 5) Solve ILP over packs
-        std::vector<bool> Chosen = solveILP(C, PackCost, /*TimeLimitSeconds=*/800.0);
+        std::vector<bool> Chosen = solveILP(C, PackCost, /*TimeLimitSeconds=*/1200.0);
 
         
-        errs() << "================= Chosen Packs (by ILP) ===============\n";
-        bool AnyChosen = false;
-        size_t chosenPrinted = 0;
-        const size_t ChosenPrintLimit = 64;
-        for (size_t i = 0; i < Chosen.size(); ++i) {
-            if (chosenPrinted < ChosenPrintLimit || Chosen[i]) {
-                errs() << "  Pack " << i << ": " << (Chosen[i] ? "YES" : "NO") << "\n";
-                ++chosenPrinted;
-            }
-            if (Chosen[i])
-                AnyChosen = true;
-            if (chosenPrinted == ChosenPrintLimit && i + 1 < Chosen.size()) {
-                errs() << "  ... (" << (Chosen.size() - ChosenPrintLimit) << " more entries elided)\n";
-                break;
-            }
-        }
-        errs() << "===================================================\n";
+        // errs() << "================= Chosen Packs (by ILP) ===============\n";
+        // bool AnyChosen = false;
+        // size_t chosenPrinted = 0;
+        // const size_t ChosenPrintLimit = 64;
+        // for (size_t i = 0; i < Chosen.size(); ++i) {
+        //     if (chosenPrinted < ChosenPrintLimit || Chosen[i]) {
+        //         errs() << "  Pack " << i << ": " << (Chosen[i] ? "YES" : "NO") << "\n";
+        //         ++chosenPrinted;
+        //     }
+        //     if (Chosen[i])
+        //         AnyChosen = true;
+        //     if (chosenPrinted == ChosenPrintLimit && i + 1 < Chosen.size()) {
+        //         errs() << "  ... (" << (Chosen.size() - ChosenPrintLimit) << " more entries elided)\n";
+        //         break;
+        //     }
+        // }
+        // errs() << "===================================================\n";
 
         // if (!AnyChosen) {
         //     errs() << "ILP chose no packs; stopping.\n";
@@ -180,7 +170,8 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
 
     if (worked) {
         return PreservedAnalyses::none();
-    } else {
+    } 
+    else {
         return PreservedAnalyses::all();
     }
 }
