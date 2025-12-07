@@ -1,2 +1,5 @@
 .vscode/
 GoSLP/build
+*.ll
+*_baseline
+*_goslp

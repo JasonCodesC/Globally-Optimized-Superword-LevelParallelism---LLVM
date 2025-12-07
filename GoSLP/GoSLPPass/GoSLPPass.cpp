@@ -40,7 +40,7 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
 
         // 1) Collect legal 2-wide candidate packs
         CandidatePairs C = collectCandidatePairs(F, AA, MSSA);
-      //  printCandidatePairs(C);
+        printCandidatePairs(C);
 
         if (C.Packs.empty()) {
             errs() << "No candidate packs, stopping.\n";
@@ -99,8 +99,8 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
                 return 0.0;
             }
 
-            auto scalarVal = ScalarCost.isValid() ? static_cast<double>(ScalarCost.getValue()) : 0.0;
-            auto vectorVal = VectorCost.isValid() ? static_cast<double>(VectorCost.getValue()) : 0.0;
+            auto scalarVal = ScalarCost.isValid() ? static_cast<double>(ScalarCost.getValue().value()) : 0.0;
+            auto vectorVal = VectorCost.isValid() ? static_cast<double>(VectorCost.getValue().value()) : 0.0;
             return scalarVal * static_cast<double>(Width) - vectorVal;
         };
 
@@ -112,8 +112,8 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
             InstructionCost packCostIC   = SC.getPackCost(N);
             InstructionCost unpackCostIC = SC.getUnpackCost(N);
 
-            int pack_val   = packCostIC.isValid()   ? static_cast<int>(packCostIC.getValue())   : 0;
-            int unpack_val = unpackCostIC.isValid() ? static_cast<int>(unpackCostIC.getValue()) : 0;
+            int pack_val   = packCostIC.isValid()   ? static_cast<int>(packCostIC.getValue().value())   : 0;
+            int unpack_val = unpackCostIC.isValid() ? static_cast<int>(unpackCostIC.getValue().value()) : 0;
 
             int width = static_cast<int>(N.pack.size()); // should be 2 here
             double vecBenefit = estimateOpBenefit(N.pack[0], width);
@@ -121,24 +121,23 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
             // packs proceed while still requiring pack+unpack to be outweighed.
             double adjustedBenefit = vecBenefit;
             if (adjustedBenefit <= 0.0)
-                adjustedBenefit = 1.5 * static_cast<double>(width);
+                adjustedBenefit = 5 * static_cast<double>(width); // todo: set magic number
 
             // Smaller is better; negative means "good to take".
             PackCost[i] = static_cast<double>(pack_val + unpack_val) - adjustedBenefit;
         }
 
-        // Debug: prinlt costs
-        // errs() << "==================== Pack Costs ====================\n";
-        // const size_t CostPrintLimit = 64;
-        // for (size_t i = 0; i < PackCost.size() && i < CostPrintLimit; ++i) {
-        //     errs() << formatv("  Pack {0,3} : {1,8:F2}\n", i, PackCost[i]);
-        // }
-        // if (PackCost.size() > CostPrintLimit)
-        //     errs() << "  ... (" << (PackCost.size() - CostPrintLimit) << " more costs elided)\n";
-        // errs() << "===================================================\n";
+        errs() << "==================== Pack Costs ====================\n";
+        const size_t CostPrintLimit = 64;
+        for (size_t i = 0; i < PackCost.size() && i < CostPrintLimit; ++i) {
+            errs() << formatv("  Pack {0,3} : {1,8:F2}\n", i, PackCost[i]);
+        }
+        if (PackCost.size() > CostPrintLimit)
+            errs() << "  ... (" << (PackCost.size() - CostPrintLimit) << " more costs elided)\n";
+        errs() << "===================================================\n";
 
         // 5) Solve ILP over packs
-        std::vector<bool> Chosen = solveILP(C, PackCost, /*TimeLimitSeconds=*/800.0);
+        std::vector<bool> Chosen = solveILP(C, PackCost, /*TimeLimitSeconds=*/8.0); // TODO: make timelimit appropriate
 
         
         errs() << "================= Chosen Packs (by ILP) ===============\n";

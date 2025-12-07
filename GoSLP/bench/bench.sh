@@ -41,9 +41,19 @@ run_bin() {
 # Baseline (no GoSLP)
 clang++ "${clangxx_flags[@]}" "${bench_src}" -o bench_baseline
 
+case "$(uname)" in
+    Linux)
+        os_so_ending="so"
+        ;;
+    Darwin)
+        os_so_ending="dylib"
+        ;;
+    *)
+esac
+
 # With GoSLP
 clang++ "${clangxx_flags[@]}" -emit-llvm -S "${bench_src}" -o bench.ll
-opt -load-pass-plugin="${root}/build/GoSLPPass/GoSLPPass.dylib" -passes=GoSLPPass -S bench.ll -o bench.goslp.ll
+opt -load-pass-plugin="${root}/build/GoSLPPass/GoSLPPass."$os_so_ending"" -passes=GoSLPPass -S bench.ll -o bench.goslp.ll
 clang++ "${clangxx_flags[@]}" bench.goslp.ll -o bench_goslp
 
 # Run both variants

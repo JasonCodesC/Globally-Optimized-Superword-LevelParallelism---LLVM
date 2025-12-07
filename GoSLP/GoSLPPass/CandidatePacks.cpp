@@ -470,7 +470,7 @@ CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA
     if (N < 2) {
       continue;
     }
-  const uint32_t MaxNeighborDistance = 1; // only immediate neighbors to curb explosion
+    const uint32_t MaxNeighborDistance = 1; // only immediate neighbors to curb explosion
     for (uint32_t i = 0; i < N; ++i) {
       Instruction *I1 = StmtsInBB[i];
       uint32_t jEnd = std::min<uint32_t>(N, i + 1 + MaxNeighborDistance);

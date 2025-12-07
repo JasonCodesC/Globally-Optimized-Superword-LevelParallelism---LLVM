@@ -142,7 +142,7 @@ InstructionCost ShuffleCost::getShuffleCost(const Node &Src, const Node &Dst) co
             totalCost += TTI->getShuffleCost(
                 TargetTransformInfo::SK_PermuteSingleSrc,
                 VecTy,
-                VecTy,
+                // VecTy,
                 laneMap
             );
         }
