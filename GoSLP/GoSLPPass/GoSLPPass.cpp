@@ -18,9 +18,32 @@
 
 using namespace llvm;
 
+static std::string target_function;
 
 class GoSLPPass : public PassInfoMixin<GoSLPPass> {
 public:
+
+    bool specific_function = false;
+    std::string target_function;
+    bool debug_flag = false;
+
+    GoSLPPass() = default;
+
+    // Constructor for just function name
+    GoSLPPass(std::string FnName)
+        : specific_function(true),
+          target_function(std::move(FnName)) {}
+
+    // Constructor for both function name + debug
+    GoSLPPass(bool specific, std::string FnName, bool debug)
+        : specific_function(specific),
+          target_function(std::move(FnName)),
+          debug_flag(debug) {}
+
+    // Constructor for only debug
+    GoSLPPass(bool debug)
+        : debug_flag(debug) {}
+
     PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
 };
 
@@ -34,12 +57,16 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
     bool worked = false;
     int iter = 0;
 
+    if (specific_function && !F.getName().contains(target_function)) {
+        return PreservedAnalyses::all();
+    }
+
     while (true) {
         ++iter;
         errs() << "\n========== GoSLP iteration #" << iter << " on func " << F.getName() << " ==========\n";
 
         // 1) Collect legal 2-wide candidate packs
-        CandidatePairs C = collectCandidatePairs(F, AA, MSSA);
+        CandidatePairs C = collectCandidatePairs(F, AA, MSSA, debug_flag);
         printCandidatePairs(C);
 
         if (C.Packs.empty()) {
@@ -137,7 +164,7 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
         errs() << "===================================================\n";
 
         // 5) Solve ILP over packs
-        std::vector<bool> Chosen = solveILP(C, PackCost, /*TimeLimitSeconds=*/8.0); // TODO: make timelimit appropriate
+        std::vector<bool> Chosen = solveILP(C, PackCost, /*TimeLimitSeconds=*/80.0); // TODO: make timelimit appropriate
 
         
         errs() << "================= Chosen Packs (by ILP) ===============\n";
@@ -167,7 +194,7 @@ PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
         Perms LanePerm = choosePermutationsDP(G, SC);
 
         // 7) Emit vector IR for chosen packs
-        bool Changed = emit(F, C, Chosen, LanePerm);
+        bool Changed = emit(F, C, Chosen, LanePerm, debug_flag);
         if (!Changed) {
             errs() << "Emit produced no changes; stopping.\n";
             break;
@@ -193,12 +220,43 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
             PB.registerPipelineParsingCallback(
                 [](StringRef Name,
                    FunctionPassManager &FPM,
-                   ArrayRef<PassBuilder::PipelineElement>) {
-                    if (Name == "GoSLPPass") {
-                        FPM.addPass(GoSLPPass());
-                        return true;
+                   ArrayRef<PassBuilder::PipelineElement> Pipeline) {
+                    if (Name != "GoSLPPass")
+                        return false;
+
+                    bool hasFilter = false;
+                    std::string FnName;
+                    bool debug_flag = false;
+
+                    for (auto &Elem : Pipeline) {
+
+                        auto parts = Elem.Name.split(':');
+
+                        if (parts.first == "func" && !parts.second.empty()) {
+                            FnName = parts.second.str();
+                            hasFilter = true;
+                            continue;
+                        }
+
+                        if (parts.first == "o3flag") {
+                            if (parts.second.empty() || parts.second == "true")
+                                debug_flag = true;
+                            else
+                                debug_flag = false;
+                        }
                     }
-                    return false;
+
+                    if (hasFilter) {
+                        GoSLPPass P(FnName);
+                        P.debug_flag = debug_flag;
+                        FPM.addPass(std::move(P));
+                    } else {
+                        GoSLPPass P;
+                        P.debug_flag = debug_flag;
+                        FPM.addPass(std::move(P));
+                    }
+
+                    return true;
                 });
         }
     };

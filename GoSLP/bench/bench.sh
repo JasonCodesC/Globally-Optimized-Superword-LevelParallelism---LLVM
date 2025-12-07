@@ -30,6 +30,12 @@ fi
 
 bench_src="${root}/bench/bench.cpp"
 clangxx_flags=(-std=c++17 -O3 -fno-slp-vectorize -ffp-contract=off "${sysroot_args[@]}")
+goslp_args="GoSLPPass()"
+
+if [[ "$kernel" == contrived_ex_* ]]; then
+    clangxx_flags=(-std=c++17 -O0 -Xclang -disable-O0-optnone -fno-slp-vectorize -fno-discard-value-names -ffp-contract=off "${sysroot_args[@]}")
+    goslp_args="GoSLPPass(func:${kernel},o3flag:true)"
+fi
 
 run_bin() {
   local exe="$1"
@@ -53,7 +59,9 @@ esac
 
 # With GoSLP
 clang++ "${clangxx_flags[@]}" -emit-llvm -S "${bench_src}" -o bench.ll
-opt -load-pass-plugin="${root}/build/GoSLPPass/GoSLPPass."$os_so_ending"" -passes=GoSLPPass -S bench.ll -o bench.goslp.ll
+opt -load-pass-plugin="${root}/build/GoSLPPass/GoSLPPass.${os_so_ending}" \
+    -passes="$goslp_args" \
+    -S bench.ll -o bench.goslp.ll
 clang++ "${clangxx_flags[@]}" bench.goslp.ll -o bench_goslp
 
 # Run both variants

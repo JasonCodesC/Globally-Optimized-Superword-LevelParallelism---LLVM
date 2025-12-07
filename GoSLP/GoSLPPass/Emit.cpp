@@ -166,7 +166,7 @@ bool iterativeLoadStorePack(const std::vector<const Instruction *> &lanes_copy, 
     }
 }
 
-bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const Perms &LanePerm) {
+bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const Perms &LanePerm, bool debug) {
     bool changed = false;
     std::vector<Instruction *> to_erase;
 
@@ -242,7 +242,15 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
             }
         }
 
-        Instruction *insertBefore = insert_pt;
+        Instruction *latest_pt = const_cast<Instruction *>(lanes_copy[0]);
+        for (const Instruction *curr : lanes_copy) {
+            Instruction *inst = const_cast<Instruction *>(curr);
+            if (inst->getParent() == latest_pt->getParent() && latest_pt->comesBefore(inst)) {
+                latest_pt = inst;
+            }
+        }
+
+        Instruction *insertBefore = debug ? latest_pt : insert_pt;
 
         IRBuilder<> builder(insertBefore);
         int width = lanes_copy.size();
@@ -306,6 +314,22 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
                     int wide_index = lane;
                     laneVal = extBuilder.CreateExtractElement(
                         vec_bin_op, ConstantInt::get(Type::getInt32Ty(ctx), wide_index), "goslp.ext");
+
+                        if (debug) {
+                            if (isa<Instruction>(laneVal)) {
+                                cast<Instruction>(laneVal)->moveAfter(vec_bin_op);
+                                SmallVector<Instruction*> users_to_move;
+                                for (User *U : old_inst->users()) {
+                                    if (Instruction *userI = dyn_cast<Instruction>(U)) {
+                                        users_to_move.push_back(userI);
+                                    }
+                                }
+
+                                for (Instruction *I : users_to_move) {
+                                    I->moveAfter(cast<Instruction>(laneVal));
+                                }
+                            }
+                        }
                 } else {
                     SmallVector<Constant *, 8> mask_elems;
                     mask_elems.reserve(sub_width);
@@ -445,7 +469,6 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
         } else {
             inst->eraseFromParent();
         }
-        // inst->eraseFromParent();
     }
     
     // LLVMContext &new_ctx = F.getContext(); 

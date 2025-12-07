@@ -91,21 +91,11 @@ static void nested(uint64_t seed, uint64_t &acc_int, double &acc_float) {
 }
 
 static inline void contrived_ex_1(const int *a, const int *b, int *c, int *d) {
-    int x0 = a[0] + b[0];
-    int y0 = x0 * 3;
-    c[0] = y0 + 5;
+    int x0 = a[0] * 2;
+    int y0 = a[1] * 2;
 
-    int x1 = a[1] + b[1];
-    int y1 = x1 * 3;
-    c[1] = y1 + 5;
-
-    int x2 = a[2] + b[2];
-    int y2 = x2 * 3;
-    d[0] = y2 + 5;
-
-    int x3 = a[3] + b[3];
-    int y3 = x3 * 3;
-    d[1] = y3 + 5;
+    c[0] = x0;
+    c[1] = y0;
 }
 
 

@@ -402,7 +402,7 @@ bool isCandidateStatement(Instruction *I) {
 
 // Check all goSLP §3.1 constraints for a *pair* (Si, Sj) in the same BB.
 bool legalGoSLPPair(Instruction *I1, Instruction *I2, const DataLayout &DL,
-    AAResults &AA, MemorySSA &MSSA) {
+    AAResults &AA, MemorySSA &MSSA, bool debug) {
 
   if (I1 == I2) {
     return false;
@@ -410,7 +410,7 @@ bool legalGoSLPPair(Instruction *I1, Instruction *I2, const DataLayout &DL,
   if (!areIsomorphic(I1, I2)) {
     return false;
   }
-  if (!areIndependent(I1, I2, MSSA)) {
+  if (!debug && !areIndependent(I1, I2, MSSA)) {
     return false;
   }
   if (!areSchedulableTogether(I1, I2)) {
@@ -430,7 +430,7 @@ bool legalGoSLPPair(Instruction *I1, Instruction *I2, const DataLayout &DL,
 static void widenPacks(CandidatePairs &C, const DataLayout &DL, AAResults &AA,
                        unsigned MaxWidth = 32);
 
-CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA) {
+CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA, bool debug) {
 
   CandidatePairs Result;
   Module *M = F.getParent();
@@ -514,7 +514,7 @@ CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA
       for (size_t i = 0; i + 1 < Vec.size(); ++i) {
         Instruction *A = Vec[i];
         Instruction *B = Vec[i + 1];
-        if (legalGoSLPPair(A, B, DL, AA, MSSA))
+        if (legalGoSLPPair(A, B, DL, AA, MSSA, debug))
           addPack(Result, A, B);
       }
     };
@@ -596,7 +596,7 @@ CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA
   }
 
   // Iterative widening over the collected packs.
-  if (Result.Packs.size() <= 256)
+  if (Result.Packs.size() <= 256 && !debug)
     widenPacks(Result, DL, AA, /*MaxWidth=*/32);
 
   return Result;

@@ -47,7 +47,7 @@ void addPack(CandidatePairs &C, const Instruction *I1, const Instruction *I2);
 bool isCandidateStatement(Instruction *I);
 bool legalGoSLPPair(Instruction *I1, Instruction *I2, const DataLayout &DL,
     AAResults &AA, MemorySSA &MSSA);
-CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA);
+CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA, bool debug);
 
 
 void printCandidatePairs(const CandidatePairs &CP);
