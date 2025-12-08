@@ -104,7 +104,7 @@ bool areIsomorphic(const Instruction *I1, const Instruction *I2) {
   // fmuladd intrinsic calls
   if (const auto *CI1 = dyn_cast<CallInst>(I1)) {
     const auto *CI2 = dyn_cast<CallInst>(I2);
-    if (!CI2)
+    if (!CI2) 
       return false;
     auto *F1 = CI1->getCalledFunction();
     auto *F2 = CI2->getCalledFunction();
@@ -134,8 +134,8 @@ bool getAddrBaseAndOffset(const Instruction *I, const DataLayout &DL,
   Type *ElemTy = nullptr;
 
   if (auto const *L = dyn_cast<LoadInst>(I)) {
-    Ptr = L->getPointerOperand();                 // e.g. %12 or %19
-    ElemTy = L->getType();                        // i32
+    Ptr = L->getPointerOperand();
+    ElemTy = L->getType();
   } 
   else if (auto const *S = dyn_cast<StoreInst>(I)) {
     Ptr = S->getPointerOperand();
@@ -158,11 +158,12 @@ bool getAddrBaseAndOffset(const Instruction *I, const DataLayout &DL,
 }
 
 bool areLoadsEquivalent(const Instruction *A, const Instruction *B) {
-    if (!A || !B) return false;
-    if (A->getOpcode() != B->getOpcode())
+    if (!A || !B) {
+      return false;
+    }
+    if (A->getOpcode() != B->getOpcode()) {
         return false;
-
-    // Must be load
+    }
     if (A->getOpcode() != Instruction::Load)
         return false;
 
@@ -202,8 +203,9 @@ bool areAdjacentMemoryAccesses(const Instruction *I1, const Instruction *I2,
     return false;
   }
   
-  if (AA.isNoAlias(MemoryLocation::get(I1), MemoryLocation::get(I2)))
+  if (AA.isNoAlias(MemoryLocation::get(I1), MemoryLocation::get(I2))) {
     return false;
+  }
 
   // ensure elements are adjacent
   Type *ElemTy = nullptr;
@@ -279,19 +281,17 @@ bool isTransitivelyDependent(Instruction *From, Instruction *To, MemorySSA &MSSA
 
 // ensure no dependence either way.
 bool areIndependent(Instruction *I1, Instruction *I2, MemorySSA &MSSA) {
-  if (isTransitivelyDependent(I1, I2, MSSA) ||
-      isTransitivelyDependent(I2, I1, MSSA)) {
+  if (isTransitivelyDependent(I1, I2, MSSA) || isTransitivelyDependent(I2, I1, MSSA)) {
     return false;
   }
-
-  // If neither writes to memory, SSA def-use is the only dependency.
   if (!I1->mayWriteToMemory() && !I2->mayWriteToMemory())
     return true;
 
   MemoryAccess *MA1 = MSSA.getMemoryAccess(I1);
   MemoryAccess *MA2 = MSSA.getMemoryAccess(I2);
-  if (!MA1 || !MA2)
+  if (!MA1 || !MA2) {
     return true;
+  }
 
   if (MemorySSAWalker *W = MSSA.getWalker()) {
     if (W->getClobberingMemoryAccess(MA2) == MA1)
@@ -692,7 +692,6 @@ static void widenPacks(CandidatePairs &C, const DataLayout &DL, AAResults &AA,
 void printCandidatePairs(const CandidatePairs &CP) {
     errs() << "===== CandidatePairs =====\n";
 
-    // ---- Print Packs (truncated) ----
     const size_t Limit = 80;
     errs() << "Packs (" << CP.Packs.size() << "): showing first "
            << std::min(Limit, CP.Packs.size()) << "\n";
@@ -710,7 +709,6 @@ void printCandidatePairs(const CandidatePairs &CP) {
     if (CP.Packs.size() > Limit)
       errs() << "  ... (" << (CP.Packs.size() - Limit) << " more packs elided)\n";
 
-    // ---- Print InstToCandidates (summary) ----
     errs() << "InstToCandidates (" << CP.InstToCandidates.size() << ")\n";
     errs() << "==========================\n";
 }
