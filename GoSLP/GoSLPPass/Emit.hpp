@@ -15,4 +15,4 @@ bool good_mem_ops(const std::vector<const Instruction *> &lanes, const DataLayou
     Type *elem_ty, std::vector<int> &mem_index);
 bool iterativeLoadStorePack(const std::vector<const Instruction *> &lanes_copy, Type *val_ty, bool is_load, 
         const DataLayout &DL, LLVMContext &ctx, IRBuilder<> &builder, std::vector<Instruction *> &to_erase);
-bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const Perms &LanePerm);
+bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const Perms &LanePerm, bool debug);

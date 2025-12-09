@@ -90,6 +90,15 @@ static void nested(uint64_t seed, uint64_t &acc_int, double &acc_float) {
     
 }
 
+static inline void contrived_ex_1(const int *a, const int *b, int *c, int *d) {
+    int x0 = a[0] * 2;
+    int y0 = a[1] * 2;
+
+    c[0] = x0;
+    c[1] = y0;
+}
+
+
 static uint64_t checksum_int(const int *data, size_t len) {
     uint64_t acc = 0;
     for (size_t i = 0; i < len; ++i)
@@ -164,8 +173,14 @@ int main(int argc, char **argv) {
         for (uint64_t i = 0; i < iters; ++i) {
             nested(i, acc_int, acc_float);
         }
+    } else if (std::strcmp(kernel, "contrived_ex_1") == 0) {
+        int a[2] = {3,7};
+        int b[2] = {4,5};
+        int c[2];
+        int d[2];
+        contrived_ex_1(a,b,c,d);
     } else {
-        std::fprintf(stderr, "Unknown kernel '%s'. Use vec4_add, saxpy3, dot64, or quad_loops.\n", kernel);
+        std::fprintf(stderr, "Unknown kernel '%s'. Use vec4_add, saxpy3, dot64, or quad_loops (or contrived_ex_<x>).\n", kernel);
         return 1;
     }
 
