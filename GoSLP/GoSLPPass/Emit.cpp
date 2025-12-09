@@ -470,9 +470,6 @@ bool emit(Function &F, CandidatePairs &C, const std::vector<bool> &Chosen, const
             inst->eraseFromParent();
         }
     }
-    
-    // LLVMContext &new_ctx = F.getContext(); 
-    // F.print(errs(), nullptr);
 
     return changed;
 }

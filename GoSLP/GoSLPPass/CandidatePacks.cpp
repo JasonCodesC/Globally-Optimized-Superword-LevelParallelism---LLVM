@@ -104,7 +104,7 @@ bool areIsomorphic(const Instruction *I1, const Instruction *I2) {
   // fmuladd intrinsic calls
   if (const auto *CI1 = dyn_cast<CallInst>(I1)) {
     const auto *CI2 = dyn_cast<CallInst>(I2);
-    if (!CI2)
+    if (!CI2) 
       return false;
     auto *F1 = CI1->getCalledFunction();
     auto *F2 = CI2->getCalledFunction();
@@ -128,64 +128,29 @@ bool areIsomorphic(const Instruction *I1, const Instruction *I2) {
 }
 
 // compute base and offset for a load/store
-// bool getAddrBaseAndOffset(const Instruction *I, const DataLayout &DL,
-//         const Value *&Base, int64_t &ByteOffset) {
-
-//   Value *Ptr = nullptr;
-//   Type *ElemTy = nullptr;
-
-//   if (auto const *L = dyn_cast<LoadInst>(I)) {
-//     Ptr = const_cast<Value *>(L->getPointerOperand());
-//     ElemTy = L->getType();
-//   } 
-//   else if (auto const *S = dyn_cast<StoreInst>(I)) {
-//     Ptr = const_cast<Value *>(S->getPointerOperand());
-//     ElemTy = S->getValueOperand()->getType();
-//   } 
-//   else {
-//     return false;
-//   }
-
-//   if (!ElemTy->isSized())
-//     return false;
-
-//   APInt Offset(DL.getPointerSizeInBits(0), 0);
-
-//   Ptr = Ptr->stripAndAccumulateInBoundsConstantOffsets(DL, Offset);
-//   Base = Ptr->stripInBoundsConstantOffsets();
-//   ByteOffset = Offset.getSExtValue();
-
-//   return true;
-// }
-
-// compute base and offset for a load/store
 bool getAddrBaseAndOffset(const Instruction *I, const DataLayout &DL,
                           const Value *&Base, int64_t &ByteOffset) {
   const Value *Ptr = nullptr;
   Type *ElemTy = nullptr;
 
   if (auto const *L = dyn_cast<LoadInst>(I)) {
-    Ptr = L->getPointerOperand();                 // e.g. %12 or %19
-    ElemTy = L->getType();                        // i32
-  } else if (auto const *S = dyn_cast<StoreInst>(I)) {
+    Ptr = L->getPointerOperand();
+    ElemTy = L->getType();
+  } 
+  else if (auto const *S = dyn_cast<StoreInst>(I)) {
     Ptr = S->getPointerOperand();
     ElemTy = S->getValueOperand()->getType();
-  } else {
+  } 
+  else {
     return false;
   }
 
   if (!ElemTy->isSized())
     return false;
 
-  // Start from the pointer operand and strip inbounds constant GEPs,
-  // accumulating the byte offset.
-  APInt Offset(DL.getIndexTypeSizeInBits(Ptr->getType()), 0);
-  const Value *PtrNoConstGEP =
-      Ptr->stripAndAccumulateInBoundsConstantOffsets(DL, Offset);
 
-  // Canonical base: underlying object (alloca, global, arg, etc.).
-  // This makes both a[0] and a[1] see the same Base.
-  // Base = getUnderlyingObject(PtrNoConstGEP, DL);
+  APInt Offset(DL.getIndexTypeSizeInBits(Ptr->getType()), 0);
+  const Value *PtrNoConstGEP = Ptr->stripAndAccumulateInBoundsConstantOffsets(DL, Offset);
   Base = getUnderlyingObject(PtrNoConstGEP);
 
   ByteOffset = Offset.getSExtValue();
@@ -193,11 +158,12 @@ bool getAddrBaseAndOffset(const Instruction *I, const DataLayout &DL,
 }
 
 bool areLoadsEquivalent(const Instruction *A, const Instruction *B) {
-    if (!A || !B) return false;
-    if (A->getOpcode() != B->getOpcode())
+    if (!A || !B) {
+      return false;
+    }
+    if (A->getOpcode() != B->getOpcode()) {
         return false;
-
-    // Must be load
+    }
     if (A->getOpcode() != Instruction::Load)
         return false;
 
@@ -236,11 +202,10 @@ bool areAdjacentMemoryAccesses(const Instruction *I1, const Instruction *I2,
   if (!areLoadsEquivalent(I1, I2)) {
     return false;
   }
-  // If AA can prove they do not alias, bail; otherwise allow possibly-aliasing
-  // bases (this is important in unrolled loops where pointers compare
-  // differently but still walk the same underlying array).
-  if (AA.isNoAlias(MemoryLocation::get(I1), MemoryLocation::get(I2)))
+  
+  if (AA.isNoAlias(MemoryLocation::get(I1), MemoryLocation::get(I2))) {
     return false;
+  }
 
   // ensure elements are adjacent
   Type *ElemTy = nullptr;
@@ -293,8 +258,6 @@ bool isTransitivelyDependent(Instruction *From, Instruction *To, MemorySSA &MSSA
     }
 
     // If this instruction writes to memory, follow the MemorySSA def-use edges
-    // that it actually clobbers. This captures store->load/store dependences
-    // without treating unrelated reads as dependent.
     if (Cur->mayWriteToMemory()) {
       if (MemoryAccess *MA = MSSA.getMemoryAccess(Cur)) {
         if (MemorySSAWalker *W = MSSA.getWalker()) {
@@ -318,19 +281,17 @@ bool isTransitivelyDependent(Instruction *From, Instruction *To, MemorySSA &MSSA
 
 // ensure no dependence either way.
 bool areIndependent(Instruction *I1, Instruction *I2, MemorySSA &MSSA) {
-  if (isTransitivelyDependent(I1, I2, MSSA) ||
-      isTransitivelyDependent(I2, I1, MSSA)) {
+  if (isTransitivelyDependent(I1, I2, MSSA) || isTransitivelyDependent(I2, I1, MSSA)) {
     return false;
   }
-
-  // If neither writes to memory, SSA def-use is the only dependency.
   if (!I1->mayWriteToMemory() && !I2->mayWriteToMemory())
     return true;
 
   MemoryAccess *MA1 = MSSA.getMemoryAccess(I1);
   MemoryAccess *MA2 = MSSA.getMemoryAccess(I2);
-  if (!MA1 || !MA2)
+  if (!MA1 || !MA2) {
     return true;
+  }
 
   if (MemorySSAWalker *W = MSSA.getWalker()) {
     if (W->getClobberingMemoryAccess(MA2) == MA1)
@@ -400,7 +361,7 @@ bool isCandidateStatement(Instruction *I) {
   return false;
 }
 
-// Check all goSLP §3.1 constraints for a *pair* (Si, Sj) in the same BB.
+// Check all goSLP pairs
 bool legalGoSLPPair(Instruction *I1, Instruction *I2, const DataLayout &DL,
     AAResults &AA, MemorySSA &MSSA, bool debug) {
 
@@ -500,7 +461,8 @@ CandidatePairs collectCandidatePairs(Function &F, AAResults &AA, MemorySSA &MSSA
         continue;
       if (auto *BO = dyn_cast<BinaryOperator>(&I)) {
         OpsToInsts[BO->getOpcode()].push_back(&I);
-      } else if (auto *CI = dyn_cast<CallInst>(&I)) {
+      } 
+      else if (auto *CI = dyn_cast<CallInst>(&I)) {
         if (auto *F = CI->getCalledFunction()) {
           if (F->getIntrinsicID() == Intrinsic::fmuladd)
             FMAInsts.push_back(&I);
@@ -730,7 +692,6 @@ static void widenPacks(CandidatePairs &C, const DataLayout &DL, AAResults &AA,
 void printCandidatePairs(const CandidatePairs &CP) {
     errs() << "===== CandidatePairs =====\n";
 
-    // ---- Print Packs (truncated) ----
     const size_t Limit = 80;
     errs() << "Packs (" << CP.Packs.size() << "): showing first "
            << std::min(Limit, CP.Packs.size()) << "\n";
@@ -748,7 +709,6 @@ void printCandidatePairs(const CandidatePairs &CP) {
     if (CP.Packs.size() > Limit)
       errs() << "  ... (" << (CP.Packs.size() - Limit) << " more packs elided)\n";
 
-    // ---- Print InstToCandidates (summary) ----
     errs() << "InstToCandidates (" << CP.InstToCandidates.size() << ")\n";
     errs() << "==========================\n";
 }
