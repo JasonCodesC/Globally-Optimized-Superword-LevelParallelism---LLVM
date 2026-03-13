@@ -28,9 +28,46 @@ struct CandidateId {
   uint32_t Index;  // index
 };
 
+struct ValuePackKey {
+  std::vector<const Value *> Lanes;
+  bool operator==(const ValuePackKey &Other) const { return Lanes == Other.Lanes; }
+};
+
+struct ValuePackKeyHash {
+  size_t operator()(const ValuePackKey &K) const noexcept {
+    size_t H = 1469598103934665603ULL;
+    for (const Value *V : K.Lanes) {
+      size_t P = std::hash<const Value *>{}(V);
+      H ^= P;
+      H *= 1099511628211ULL;
+    }
+    return H;
+  }
+};
+
+struct LaneUseInfo {
+  bool HasOutsideUse = false;
+  // Map scalar user -> vector packs that can vectorize this use.
+  std::unordered_map<const Instruction *, std::vector<uint32_t>> UserToVectorUses;
+};
+
 struct CandidatePairs {
   std::vector<std::vector<const Instruction *>> Packs;
   std::unordered_map<const Instruction *, std::vector<CandidateId>> InstToCandidates;
+
+  // Candidate vector pack -> vectorized user packs that can consume it.
+  std::unordered_map<uint32_t, std::vector<uint32_t>> VecVecUses;
+
+  // Non-vectorizable operand packs and their vectorized users.
+  std::vector<ValuePackKey> NonVecPacks;
+  std::unordered_map<ValuePackKey, uint32_t, ValuePackKeyHash> NonVecPackToIndex;
+  std::unordered_map<uint32_t, std::vector<uint32_t>> NonVecVecUses;
+
+  // Per pack/lane extraction analysis data.
+  std::vector<std::vector<LaneUseInfo>> LaneUses;
+
+  // Circular dependency conflicts between candidate packs.
+  std::vector<std::vector<uint32_t>> CircularConflicts;
 };
 
 bool accessesMemory(const Instruction *I);

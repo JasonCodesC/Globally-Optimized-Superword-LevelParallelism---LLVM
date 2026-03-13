@@ -1,0 +1,2 @@
+workload,before_seconds,after_seconds,speedup
+heavy_function_opt_run,15.56,4.15,3.75

@@ -1,154 +1,233 @@
 #include "ILP.hpp"
+
 #include <algorithm>
-#include <limits>
-#include <cmath>
-#include <iostream>
 #include <numeric>
-
-
 #include <unordered_set>
-#include <chrono>
-#include <functional>
-#include <limits>
 
 using namespace llvm;
 
-// Branch-and-bound over packs with "each scalar in at most one pack" constraint.
-std::vector<bool> solveILP(const CandidatePairs &C,
-                           const std::vector<double> &PackCost,
-                           double TimeLimitSeconds) {
-  const int N = static_cast<int>(C.Packs.size());
-  std::vector<bool> best(N, false);
-  std::vector<bool> cur(N, false);
+namespace {
 
-  if (N == 0)
-    return best;
+static bool hasChosenUse(const std::vector<uint32_t> &Uses,
+                         const std::vector<bool> &Chosen) {
+  for (uint32_t U : Uses) {
+    if (U < Chosen.size() && Chosen[U])
+      return true;
+  }
+  return false;
+}
 
-  // Normalize costs to length N (missing entries treated as 0).
-  std::vector<double> Cost(N, 0.0);
-  for (int i = 0; i < N; ++i) {
-    if (i < static_cast<int>(PackCost.size()))
-      Cost[i] = PackCost[i];
-    else
-      Cost[i] = 0.0;
+static double evaluateObjective(const CandidatePairs &C, const ILPModel &Model,
+                                const std::vector<bool> &Chosen) {
+  const size_t N = C.Packs.size();
+  double Obj = 0.0;
+
+  // VS term
+  for (size_t P = 0; P < N; ++P) {
+    if (Chosen[P] && P < Model.VecSavings.size())
+      Obj += Model.VecSavings[P];
   }
 
-  // suffixNeg[i] = sum of all negative costs Cost[j] for j >= i.
-  // This gives a lower bound on how much we can further reduce the
-  // objective if from position i onward we pick every beneficial pack.
-  std::vector<double> suffixNeg(N + 1, 0.0);
-  for (int i = N - 1; i >= 0; --i) {
-    double add = (Cost[i] < 0.0) ? Cost[i] : 0.0;
-    suffixNeg[i] = suffixNeg[i + 1] + add;
+  // PCvec term: pack candidate vectors when producer is not selected but some
+  // vectorized use requires it.
+  for (size_t P = 0; P < N; ++P) {
+    if (Chosen[P])
+      continue;
+
+    auto It = C.VecVecUses.find(static_cast<uint32_t>(P));
+    if (It == C.VecVecUses.end())
+      continue;
+
+    if (hasChosenUse(It->second, Chosen) && P < Model.PackCost.size())
+      Obj += Model.PackCost[P];
   }
 
-  // Track which scalar instructions are already used by chosen packs.
-  std::unordered_set<const Instruction *> usedInsts;
-
-  // Cheap greedy seed so we always have a feasible (often good) solution even
-  // if the time limit is hit before exploring the full tree.
-  std::vector<bool> greedy(N, false);
-  std::unordered_set<const Instruction *> greedyUsed;
-  std::vector<int> order(N);
-  std::iota(order.begin(), order.end(), 0);
-  std::stable_sort(order.begin(), order.end(),
-                   [&](int A, int B) { return Cost[A] < Cost[B]; });
-
-  double bestCost = 0.0;
-  for (int idx : order) {
-    if (Cost[idx] >= 0.0)
-      break;
-    bool conflict = false;
-    for (const Instruction *I : C.Packs[idx]) {
-      if (greedyUsed.count(I)) {
-        conflict = true;
-        break;
-      }
-    }
-    if (!conflict) {
-      greedy[idx] = true;
-      bestCost += Cost[idx];
-      for (const Instruction *I : C.Packs[idx])
-        greedyUsed.insert(I);
-    }
+  // PCnonvec term.
+  for (auto &Entry : C.NonVecVecUses) {
+    uint32_t NonVecIdx = Entry.first;
+    if (!hasChosenUse(Entry.second, Chosen))
+      continue;
+    if (NonVecIdx < Model.NonVecPackCost.size())
+      Obj += Model.NonVecPackCost[NonVecIdx];
   }
-  best = greedy;
 
-  double curCost = 0.0;
+  // UC term: extract once per lane if any use remains non-vectorized.
+  for (size_t P = 0; P < N; ++P) {
+    if (!Chosen[P])
+      continue;
 
-  auto start = std::chrono::steady_clock::now();
-  auto limit = start + std::chrono::duration<double>(TimeLimitSeconds);
-  bool timeLimitHit = false;
+    if (P >= C.LaneUses.size() || P >= Model.LaneExtractCost.size())
+      continue;
 
-  std::function<void(int)> dfs = [&](int idx) {
-    if (timeLimitHit)
-      return;
+    const auto &Lanes = C.LaneUses[P];
+    const auto &LaneCosts = Model.LaneExtractCost[P];
 
-    if (TimeLimitSeconds > 0.0) {
-      auto now = std::chrono::steady_clock::now();
-      if (now > limit) {
-        timeLimitHit = true;
-        return;
-      }
-    }
+    for (size_t Lane = 0; Lane < Lanes.size() && Lane < LaneCosts.size();
+         ++Lane) {
+      const LaneUseInfo &Info = Lanes[Lane];
+      bool NeedExtract = Info.HasOutsideUse;
 
-    if (idx == N) {
-      // Leaf: update best solution if strictly better.
-      if (curCost < bestCost) {
-        bestCost = curCost;
-        best = cur;
-      }
-      return;
-    }
+      if (!NeedExtract) {
+        for (const auto &UserEntry : Info.UserToVectorUses) {
+          const auto &UsePacks = UserEntry.second;
+          bool UserVectorized = false;
+          for (uint32_t UsePack : UsePacks) {
+            if (UsePack < Chosen.size() && Chosen[UsePack]) {
+              UserVectorized = true;
+              break;
+            }
+          }
 
-    // Lower bound on achievable cost from this node:
-    double lowerBound = curCost + suffixNeg[idx];
-    if (lowerBound > bestCost) {
-      // Even in best-case (taking all remaining neg-cost packs) we can't beat
-      // the current best → prune this branch.
-      return;
-    }
-
-    // Option 1: skip this pack
-    cur[idx] = false;
-    dfs(idx + 1);
-
-    // Option 2: try taking this pack, if it doesn't conflict
-    bool conflict = false;
-    const auto &packInsts = C.Packs[idx];
-    for (const Instruction *I : packInsts) {
-      if (usedInsts.count(I)) {
-        conflict = true;
-        break;
-      }
-    }
-
-    if (!conflict) {
-      cur[idx] = true;
-      double oldCost = curCost;
-      curCost += Cost[idx];
-
-      // Insert its instructions into usedInsts and remember which were new
-      std::vector<const Instruction *> newlyInserted;
-      newlyInserted.reserve(packInsts.size());
-      for (const Instruction *I : packInsts) {
-        auto res = usedInsts.insert(I);
-        if (res.second) {
-          newlyInserted.push_back(I);
+          if (!UserVectorized) {
+            NeedExtract = true;
+            break;
+          }
         }
       }
 
-      dfs(idx + 1);
-
-      // Backtrack
-      for (const Instruction *I : newlyInserted) {
-        usedInsts.erase(I);
-      }
-      curCost = oldCost;
-      cur[idx] = false;
+      if (NeedExtract)
+        Obj += LaneCosts[Lane];
     }
+  }
+
+  return Obj;
+}
+
+static bool conflictsWithChosen(const CandidatePairs &C,
+                                const std::vector<bool> &Chosen,
+                                uint32_t PackIdx) {
+  if (PackIdx >= C.CircularConflicts.size())
+    return false;
+  for (uint32_t Other : C.CircularConflicts[PackIdx]) {
+    if (Other < Chosen.size() && Chosen[Other])
+      return true;
+  }
+  return false;
+}
+
+} // namespace
+
+std::vector<bool> solveILP(const CandidatePairs &C, const ILPModel &Model,
+                           double TimeLimitSeconds) {
+  const int N = static_cast<int>(C.Packs.size());
+  std::vector<bool> Best(N, false);
+  std::vector<bool> Cur(N, false);
+
+  if (N == 0)
+    return Best;
+
+  std::vector<double> VecSavings(N, 0.0);
+  for (int I = 0; I < N && I < static_cast<int>(Model.VecSavings.size()); ++I)
+    VecSavings[I] = Model.VecSavings[I];
+
+  std::vector<int> Order(N);
+  std::iota(Order.begin(), Order.end(), 0);
+  std::stable_sort(Order.begin(), Order.end(), [&](int A, int B) {
+    return VecSavings[A] < VecSavings[B];
+  });
+
+  std::vector<double> SuffixNeg(N + 1, 0.0);
+  for (int Pos = N - 1; Pos >= 0; --Pos) {
+    double V = VecSavings[Order[Pos]];
+    SuffixNeg[Pos] = SuffixNeg[Pos + 1] + (V < 0.0 ? V : 0.0);
+  }
+
+  std::unordered_set<const Instruction *> UsedInsts;
+
+  // Greedy seed.
+  for (int Pos = 0; Pos < N; ++Pos) {
+    int Idx = Order[Pos];
+    if (VecSavings[Idx] >= 0.0)
+      continue;
+
+    if (conflictsWithChosen(C, Cur, static_cast<uint32_t>(Idx)))
+      continue;
+
+    bool Overlap = false;
+    for (const Instruction *I : C.Packs[Idx]) {
+      if (UsedInsts.count(I)) {
+        Overlap = true;
+        break;
+      }
+    }
+    if (Overlap)
+      continue;
+
+    Cur[Idx] = true;
+    for (const Instruction *I : C.Packs[Idx])
+      UsedInsts.insert(I);
+  }
+
+  double BestObjective = evaluateObjective(C, Model, Cur);
+  Best = Cur;
+
+  // Reset state for DFS.
+  std::fill(Cur.begin(), Cur.end(), false);
+  UsedInsts.clear();
+
+  auto Start = std::chrono::steady_clock::now();
+  auto Deadline = Start + std::chrono::duration<double>(TimeLimitSeconds);
+  bool TimeLimitHit = false;
+
+  std::function<void(int, double)> DFS = [&](int Pos, double LinearCost) {
+    if (TimeLimitHit)
+      return;
+
+    if (TimeLimitSeconds > 0.0 && std::chrono::steady_clock::now() > Deadline) {
+      TimeLimitHit = true;
+      return;
+    }
+
+    if (Pos == N) {
+      double Obj = evaluateObjective(C, Model, Cur);
+      if (Obj < BestObjective) {
+        BestObjective = Obj;
+        Best = Cur;
+      }
+      return;
+    }
+
+    // Lower bound: only linear VS terms from undecided variables.
+    double LB = LinearCost + SuffixNeg[Pos];
+    if (LB > BestObjective)
+      return;
+
+    int Idx = Order[Pos];
+
+    // Branch 1: skip.
+    Cur[Idx] = false;
+    DFS(Pos + 1, LinearCost);
+
+    // Branch 2: take.
+    if (conflictsWithChosen(C, Cur, static_cast<uint32_t>(Idx)))
+      return;
+
+    bool Overlap = false;
+    for (const Instruction *I : C.Packs[Idx]) {
+      if (UsedInsts.count(I)) {
+        Overlap = true;
+        break;
+      }
+    }
+    if (Overlap)
+      return;
+
+    Cur[Idx] = true;
+    std::vector<const Instruction *> Inserted;
+    Inserted.reserve(C.Packs[Idx].size());
+    for (const Instruction *I : C.Packs[Idx]) {
+      auto Res = UsedInsts.insert(I);
+      if (Res.second)
+        Inserted.push_back(I);
+    }
+
+    DFS(Pos + 1, LinearCost + VecSavings[Idx]);
+
+    for (const Instruction *I : Inserted)
+      UsedInsts.erase(I);
+    Cur[Idx] = false;
   };
 
-  dfs(0);
-  return best;
+  DFS(0, 0.0);
+  return Best;
 }

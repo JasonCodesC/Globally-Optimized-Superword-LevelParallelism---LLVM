@@ -1,254 +1,294 @@
 #include "CandidatePacks.hpp"
-#include "ILP.hpp"
-#include "VecGraph.hpp"
-#include "ShuffleCost.hpp"
-#include "PermuteDP.hpp"
 #include "Emit.hpp"
+#include "ILP.hpp"
+#include "PermuteDP.hpp"
+#include "Reduction.hpp"
+#include "ShuffleCost.hpp"
+#include "VecGraph.hpp"
 
-#include "llvm/IR/PassManager.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/MemorySSA.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
-
+#include "llvm/IR/PassManager.h"
 #include "llvm/Pass.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <algorithm>
 
 using namespace llvm;
 
-static std::string target_function;
+namespace {
+
+static double toDouble(InstructionCost C) {
+  if (!C.isValid())
+    return 0.0;
+  return static_cast<double>(C.getValue());
+}
+
+static double estimatePackConstructionCost(Type *LaneTy, unsigned Width,
+                                           TargetTransformInfo &TTI) {
+  if (!LaneTy || Width == 0)
+    return 0.0;
+
+  if (auto *SubVecTy = dyn_cast<FixedVectorType>(LaneTy)) {
+    unsigned SubW = SubVecTy->getNumElements();
+    auto *WideTy =
+        FixedVectorType::get(SubVecTy->getElementType(), SubW * Width);
+
+    double Cost = 0.0;
+    for (unsigned I = 0; I < Width; ++I) {
+      Cost += toDouble(TTI.getShuffleCost(TargetTransformInfo::SK_InsertSubvector,
+                                          WideTy, WideTy, {},
+                                          TargetTransformInfo::TCK_RecipThroughput,
+                                          static_cast<int>(I * SubW),
+                                          SubVecTy));
+    }
+    return Cost;
+  }
+
+  auto *VecTy = FixedVectorType::get(LaneTy, Width);
+  double Cost = 0.0;
+  for (unsigned I = 0; I < Width; ++I) {
+    Cost += toDouble(TTI.getVectorInstrCost(
+        Instruction::InsertElement, VecTy,
+        TargetTransformInfo::TCK_RecipThroughput, I, nullptr, nullptr));
+  }
+  return Cost;
+}
+
+static double estimateVecSavings(const Instruction *I, unsigned Width,
+                                 TargetTransformInfo &TTI,
+                                 const DataLayout &DL) {
+  if (!I || Width == 0)
+    return 0.0;
+
+  auto CostKind = TargetTransformInfo::TCK_RecipThroughput;
+
+  if (auto *BO = dyn_cast<BinaryOperator>(I)) {
+    Type *Ty = BO->getType();
+    if (!Ty)
+      return 0.0;
+
+    double ScalarTotal = 0.0;
+    double VecCost = 0.0;
+
+    if (auto *SubVecTy = dyn_cast<FixedVectorType>(Ty)) {
+      unsigned SubW = SubVecTy->getNumElements();
+      auto *WideTy =
+          FixedVectorType::get(SubVecTy->getElementType(), SubW * Width);
+      ScalarTotal = toDouble(TTI.getArithmeticInstrCost(BO->getOpcode(), Ty,
+                                                        CostKind)) *
+                    Width;
+      VecCost = toDouble(
+          TTI.getArithmeticInstrCost(BO->getOpcode(), WideTy, CostKind));
+    } else {
+      auto *WideTy = FixedVectorType::get(Ty, Width);
+      ScalarTotal =
+          toDouble(TTI.getArithmeticInstrCost(BO->getOpcode(), Ty, CostKind)) *
+          Width;
+      VecCost =
+          toDouble(TTI.getArithmeticInstrCost(BO->getOpcode(), WideTy, CostKind));
+    }
+
+    return VecCost - ScalarTotal;
+  }
+
+  auto estimateMem = [&](unsigned Opcode, Type *Ty, Align AlignV) {
+    if (!Ty)
+      return 0.0;
+
+    double ScalarTotal = 0.0;
+    double VecCost = 0.0;
+
+    if (auto *SubVecTy = dyn_cast<FixedVectorType>(Ty)) {
+      unsigned SubW = SubVecTy->getNumElements();
+      auto *WideTy =
+          FixedVectorType::get(SubVecTy->getElementType(), SubW * Width);
+      ScalarTotal = toDouble(TTI.getMemoryOpCost(Opcode, Ty, AlignV, 0,
+                                                 CostKind)) *
+                    Width;
+      VecCost =
+          toDouble(TTI.getMemoryOpCost(Opcode, WideTy, AlignV, 0, CostKind));
+    } else {
+      auto *WideTy = FixedVectorType::get(Ty, Width);
+      ScalarTotal =
+          toDouble(TTI.getMemoryOpCost(Opcode, Ty, AlignV, 0, CostKind)) * Width;
+      VecCost =
+          toDouble(TTI.getMemoryOpCost(Opcode, WideTy, AlignV, 0, CostKind));
+    }
+
+    return VecCost - ScalarTotal;
+  };
+
+  if (auto *LI = dyn_cast<LoadInst>(I)) {
+    return estimateMem(Instruction::Load, LI->getType(), LI->getAlign());
+  }
+
+  if (auto *SI = dyn_cast<StoreInst>(I)) {
+    return estimateMem(Instruction::Store, SI->getValueOperand()->getType(),
+                       SI->getAlign());
+  }
+
+  // Unsupported operation type for paper-parity objective terms.
+  return 0.0;
+}
+
+static ILPModel buildILPModel(const CandidatePairs &C, ShuffleCost &SC,
+                              TargetTransformInfo &TTI,
+                              const DataLayout &DL) {
+  ILPModel Model;
+  const size_t N = C.Packs.size();
+  Model.VecSavings.assign(N, 0.0);
+  Model.PackCost.assign(N, 0.0);
+  Model.LaneExtractCost.assign(N, {});
+
+  for (size_t I = 0; I < N; ++I) {
+    Node NNode;
+    NNode.PackIdx = static_cast<int>(I);
+    NNode.pack = C.Packs[I];
+
+    Model.PackCost[I] = toDouble(SC.getPackCost(NNode));
+    Model.VecSavings[I] = estimateVecSavings(
+        C.Packs[I].empty() ? nullptr : C.Packs[I].front(),
+        static_cast<unsigned>(C.Packs[I].size()), TTI, DL);
+
+    auto &LaneCosts = Model.LaneExtractCost[I];
+    LaneCosts.resize(C.Packs[I].size(), 0.0);
+    for (unsigned Lane = 0; Lane < C.Packs[I].size(); ++Lane) {
+      LaneCosts[Lane] = toDouble(SC.getExtractLaneCost(C.Packs[I], Lane));
+    }
+  }
+
+  Model.NonVecPackCost.assign(C.NonVecPacks.size(), 0.0);
+  for (size_t NV = 0; NV < C.NonVecPacks.size(); ++NV) {
+    const auto &Key = C.NonVecPacks[NV];
+    if (Key.Lanes.empty())
+      continue;
+    Type *LaneTy = Key.Lanes.front()->getType();
+    Model.NonVecPackCost[NV] = estimatePackConstructionCost(
+        LaneTy, static_cast<unsigned>(Key.Lanes.size()), TTI);
+  }
+
+  return Model;
+}
 
 class GoSLPPass : public PassInfoMixin<GoSLPPass> {
 public:
+  bool specific_function = false;
+  std::string target_function;
+  bool debug_flag = false;
 
-    bool specific_function = false;
-    std::string target_function;
-    bool debug_flag = false;
+  GoSLPPass() = default;
+  explicit GoSLPPass(std::string FnName)
+      : specific_function(true), target_function(std::move(FnName)) {}
 
-    GoSLPPass() = default;
-
-    // Constructor for just function name
-    GoSLPPass(std::string FnName)
-        : specific_function(true),
-          target_function(std::move(FnName)) {}
-
-    // Constructor for both function name + debug
-    GoSLPPass(bool specific, std::string FnName, bool debug)
-        : specific_function(specific),
-          target_function(std::move(FnName)),
-          debug_flag(debug) {}
-
-    // Constructor for only debug
-    GoSLPPass(bool debug)
-        : debug_flag(debug) {}
-
-    PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
 };
 
+} // namespace
+
 PreservedAnalyses GoSLPPass::run(Function &F, FunctionAnalysisManager &FAM) {
-    AAResults &AA = FAM.getResult<AAManager>(F);
-    auto &MSSAAnalysis = FAM.getResult<MemorySSAAnalysis>(F);
-    MemorySSA &MSSA = MSSAAnalysis.getMSSA();
-    TargetTransformInfo &TTI = FAM.getResult<TargetIRAnalysis>(F);
-    const DataLayout &DL = F.getParent()->getDataLayout();
+  if (specific_function && !F.getName().contains(target_function))
+    return PreservedAnalyses::all();
 
-    bool worked = false;
-    int iter = 0;
+  AAResults &AA = FAM.getResult<AAManager>(F);
+  auto &MSSAAnalysis = FAM.getResult<MemorySSAAnalysis>(F);
+  MemorySSA &MSSA = MSSAAnalysis.getMSSA();
+  TargetTransformInfo &TTI = FAM.getResult<TargetIRAnalysis>(F);
+  const DataLayout &DL = F.getParent()->getDataLayout();
 
-    if (specific_function && !F.getName().contains(target_function)) {
-        return PreservedAnalyses::all();
+  errs() << "\n========== GoSLP on function " << F.getName()
+         << " ==========\n";
+
+  bool Changed = false;
+  CandidatePairs C = collectCandidatePairs(F, AA, MSSA, debug_flag);
+  if (debug_flag) {
+    printCandidatePairs(C);
+  } else {
+    errs() << "Candidate packs: " << C.Packs.size()
+           << ", vec-vec edges: " << C.VecVecUses.size()
+           << ", non-vec packs: " << C.NonVecPacks.size() << "\n";
+  }
+
+  if (!C.Packs.empty()) {
+    VecGraph G = buildVectorGraph(C);
+    ShuffleCost SC = createShuffleCostCalculator(F, TTI, C);
+    ILPModel Model = buildILPModel(C, SC, TTI, DL);
+
+    if (debug_flag) {
+      errs() << "==================== Vec Savings ====================\n";
+      const size_t PrintLimit = 64;
+      for (size_t I = 0; I < Model.VecSavings.size() && I < PrintLimit; ++I) {
+        errs() << formatv("  Pack {0,3} : {1,8:F2}\n", I, Model.VecSavings[I]);
+      }
+      if (Model.VecSavings.size() > PrintLimit)
+        errs() << "  ... (" << (Model.VecSavings.size() - PrintLimit)
+               << " more entries elided)\n";
+      errs() << "====================================================\n";
     }
 
-    while (true) {
-        ++iter;
-        errs() << "\n========== GoSLP iteration #" << iter << " on func " << F.getName() << " ==========\n";
+    double TimeLimitSeconds = debug_flag
+                                  ? 15.0
+                                  : std::max(0.5, std::min(4.0, 0.05 * C.Packs.size()));
+    std::vector<bool> Chosen = solveILP(C, Model, TimeLimitSeconds);
+    bool AnyChosen = llvm::any_of(Chosen, [](bool V) { return V; });
 
-        // 1) Collect legal 2-wide candidate packs
-        CandidatePairs C = collectCandidatePairs(F, AA, MSSA, debug_flag);
-        printCandidatePairs(C);
-
-        if (C.Packs.empty()) {
-            errs() << "No candidate packs, stopping.\n";
-            break;
-        }
-
-        // 2) Build vectorization graph (for permutations + shuffle modeling)
-        VecGraph G = buildVectorGraph(C);
-
-        // 3) Build shuffle/pack/unpack cost model
-        ShuffleCost SC = createShuffleCostCalculator(F, TTI, C);
-
-        // 4) Build per-pack cost vector for ILP
-        std::vector<double> PackCost(C.Packs.size(), 0.0);
-
-        auto estimateOpBenefit = [&](const Instruction *I, unsigned Width) -> double {
-            if (!I)
-                return 0.0;
-            Type *ElemTy = I->getType();
-            // Loads/stores use value type rather than ptr type.
-            if (auto *SI = dyn_cast<StoreInst>(I))
-                ElemTy = SI->getValueOperand()->getType();
-            if (!ElemTy || !ElemTy->isIntegerTy() && !ElemTy->isFloatingPointTy())
-                return 0.0;
-
-            InstructionCost ScalarCost = 0;
-            InstructionCost VectorCost = 0;
-            auto CostKind = TargetTransformInfo::TCK_RecipThroughput;
-
-            if (isa<BinaryOperator>(I)) {
-                auto *VecTy = FixedVectorType::get(ElemTy, Width);
-                unsigned Opc = I->getOpcode();
-                ScalarCost = TTI.getArithmeticInstrCost(Opc, ElemTy, CostKind);
-                VectorCost = TTI.getArithmeticInstrCost(Opc, VecTy, CostKind);
-            } 
-            else if (isa<LoadInst>(I) || isa<StoreInst>(I)) {
-                auto *VecTy = FixedVectorType::get(ElemTy, Width);
-                Align Alignment = DL.getPrefTypeAlign(ElemTy);
-                if (isa<LoadInst>(I)) {
-                    ScalarCost = TTI.getMemoryOpCost(Instruction::Load, ElemTy, Alignment, 0, CostKind);
-                    VectorCost = TTI.getMemoryOpCost(Instruction::Load, VecTy, Alignment, 0, CostKind);
-                } 
-                else {
-                    ScalarCost = TTI.getMemoryOpCost(Instruction::Store, ElemTy, Alignment, 0, CostKind);
-                    VectorCost = TTI.getMemoryOpCost(Instruction::Store, VecTy, Alignment, 0, CostKind);
-                }
-            } 
-            else {
-                return 0.0;
-            }
-
-            auto scalarVal = ScalarCost.isValid() ? static_cast<double>(ScalarCost.getValue().value()) : 0.0;
-            auto vectorVal = VectorCost.isValid() ? static_cast<double>(VectorCost.getValue().value()) : 0.0;
-            return scalarVal * static_cast<double>(Width) - vectorVal;
-        };
-
-        for (int i = 0; i < static_cast<int>(C.Packs.size()); ++i) {
-            Node N;
-            N.PackIdx = i;
-            N.pack = C.Packs[i];
-
-            InstructionCost packCostIC = SC.getPackCost(N);
-            InstructionCost unpackCostIC = SC.getUnpackCost(N);
-
-            int pack_val   = packCostIC.isValid()   ? static_cast<int>(packCostIC.getValue().value())   : 0;
-            int unpack_val = unpackCostIC.isValid() ? static_cast<int>(unpackCostIC.getValue().value()) : 0;
-
-            int width = static_cast<int>(N.pack.size());
-            double vecBenefit = estimateOpBenefit(N.pack[0], width);
-            double adjustedBenefit = vecBenefit;
-            if (adjustedBenefit <= 0.0)
-                adjustedBenefit = 5 * static_cast<double>(width); // todo: set magic number
-
-            PackCost[i] = static_cast<double>(pack_val + unpack_val) - adjustedBenefit;
-        }
-
-        errs() << "==================== Pack Costs ====================\n";
-        const size_t CostPrintLimit = 64;
-        for (size_t i = 0; i < PackCost.size() && i < CostPrintLimit; ++i) {
-            errs() << formatv("  Pack {0,3} : {1,8:F2}\n", i, PackCost[i]);
-        }
-        if (PackCost.size() > CostPrintLimit)
-            errs() << "  ... (" << (PackCost.size() - CostPrintLimit) << " more costs elided)\n";
-        errs() << "===================================================\n";
-
-        // 5) Solve ILP over packs
-        std::vector<bool> Chosen = solveILP(C, PackCost, /*TimeLimitSeconds=*/80.0); // TODO: make timelimit appropriate
-
-        
-        // errs() << "================= Chosen Packs (by ILP) ===============\n";
-        // bool AnyChosen = false;
-        // size_t chosenPrinted = 0;
-        // const size_t ChosenPrintLimit = 64;
-        // for (size_t i = 0; i < Chosen.size(); ++i) {
-        //     if (chosenPrinted < ChosenPrintLimit || Chosen[i]) {
-        //         errs() << "  Pack " << i << ": " << (Chosen[i] ? "YES" : "NO") << "\n";
-        //         ++chosenPrinted;
-        //     }
-        //     if (Chosen[i])
-        //         AnyChosen = true;
-        //     if (chosenPrinted == ChosenPrintLimit && i + 1 < Chosen.size()) {
-        //         errs() << "  ... (" << (Chosen.size() - ChosenPrintLimit) << " more entries elided)\n";
-        //         break;
-        //     }
-        // }
-        // errs() << "===================================================\n";
-
-        // if (!AnyChosen) {
-        //     errs() << "ILP chose no packs; stopping.\n";
-        //     break;
-        // }
-
-        // 6) Choose lane permutations for chosen packs (GoSLP DP)
-        Perms LanePerm = choosePermutationsDP(G, SC);
-
-        // 7) Emit vector IR for chosen packs
-        bool Changed = emit(F, C, Chosen, LanePerm, debug_flag);
-        if (!Changed) {
-            errs() << "Emit produced no changes; stopping.\n";
-            break;
-        }
-
-        worked |= Changed;
-        break;
+    if (AnyChosen) {
+      Perms LanePerm = choosePermutationsDP(G, Chosen, SC);
+      Changed |= emit(F, C, Chosen, LanePerm, debug_flag);
+    } else {
+      errs() << "ILP chose no packs.\n";
     }
+  } else {
+    errs() << "No candidate packs for standard SLP.\n";
+  }
 
-    if (worked) {
-        return PreservedAnalyses::none();
-    } 
-    else {
-        return PreservedAnalyses::all();
-    }
+  Changed |= runReductionAwareGoSLP(F, TTI, DL, debug_flag);
+
+  return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
 
 extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
-    return {
-        LLVM_PLUGIN_API_VERSION,
-        "GoSLPPass",
-        "1.0",
-        [](PassBuilder &PB) {
+  return {LLVM_PLUGIN_API_VERSION, "GoSLPPass", "1.0",
+          [](PassBuilder &PB) {
             PB.registerPipelineParsingCallback(
-                [](StringRef Name,
-                   FunctionPassManager &FPM,
+                [](StringRef Name, FunctionPassManager &FPM,
                    ArrayRef<PassBuilder::PipelineElement> Pipeline) {
-                    if (Name != "GoSLPPass")
-                        return false;
+                  if (Name != "GoSLPPass")
+                    return false;
 
-                    bool hasFilter = false;
-                    std::string FnName;
-                    bool debug_flag = false;
+                  bool HasFilter = false;
+                  std::string FnName;
+                  bool DebugFlag = false;
 
-                    for (auto &Elem : Pipeline) {
+                  for (auto &Elem : Pipeline) {
+                    auto Parts = Elem.Name.split(':');
 
-                        auto parts = Elem.Name.split(':');
-
-                        if (parts.first == "func" && !parts.second.empty()) {
-                            FnName = parts.second.str();
-                            hasFilter = true;
-                            continue;
-                        }
-
-                        if (parts.first == "o3flag") {
-                            if (parts.second.empty() || parts.second == "true")
-                                debug_flag = true;
-                            else
-                                debug_flag = false;
-                        }
+                    if (Parts.first == "func" && !Parts.second.empty()) {
+                      FnName = Parts.second.str();
+                      HasFilter = true;
+                      continue;
                     }
 
-                    if (hasFilter) {
-                        GoSLPPass P(FnName);
-                        P.debug_flag = debug_flag;
-                        FPM.addPass(std::move(P));
-                    } else {
-                        GoSLPPass P;
-                        P.debug_flag = debug_flag;
-                        FPM.addPass(std::move(P));
+                    if (Parts.first == "o3flag") {
+                      DebugFlag = Parts.second.empty() || Parts.second == "true";
                     }
+                  }
 
-                    return true;
+                  if (HasFilter) {
+                    GoSLPPass P(FnName);
+                    P.debug_flag = DebugFlag;
+                    FPM.addPass(std::move(P));
+                  } else {
+                    GoSLPPass P;
+                    P.debug_flag = DebugFlag;
+                    FPM.addPass(std::move(P));
+                  }
+
+                  return true;
                 });
-        }
-    };
+          }};
 }

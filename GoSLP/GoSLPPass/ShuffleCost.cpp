@@ -76,12 +76,21 @@ InstructionCost ShuffleCost::getPackCost(const Node &N) const {
     }
     return cost;
 }
+
+InstructionCost ShuffleCost::getExtractLaneCost(
+    const std::vector<const Instruction *> &Pack, unsigned Lane) const {
+    if (Pack.empty() || Lane >= Pack.size())
+        return InstructionCost(0);
+
+    Type *ElemTy = getElementType(Pack[0]);
+    auto *VecTy = FixedVectorType::get(ElemTy, Pack.size());
+    return TTI->getVectorInstrCost(Instruction::ExtractElement, VecTy,
+                                   TTI::TCK_RecipThroughput, Lane, nullptr,
+                                   nullptr);
+}
     
 // unpack cost
 InstructionCost ShuffleCost::getUnpackCost(const Node &N) const {
-    Type *ElemTy = getElementType(N.pack[0]);
-    auto *VecTy = FixedVectorType::get(ElemTy, N.pack.size());
-    
     InstructionCost cost = 0;
     
     for (size_t lane = 0; lane < N.pack.size(); ++lane) {
@@ -93,14 +102,7 @@ InstructionCost ShuffleCost::getUnpackCost(const Node &N) const {
                 auto It = Candidates->InstToCandidates.find(UI);
                 if (It == Candidates->InstToCandidates.end()) {
                     // scalar user -> needs extract
-                    cost += TTI->getVectorInstrCost(
-                        Instruction::ExtractElement,
-                        VecTy,
-                        TTI::TCK_RecipThroughput,
-                        lane,
-                        nullptr,
-                        nullptr
-                    );
+                    cost += getExtractLaneCost(N.pack, lane);
                 }
             }
         }
@@ -142,8 +144,9 @@ InstructionCost ShuffleCost::getShuffleCost(const Node &Src, const Node &Dst) co
             totalCost += TTI->getShuffleCost(
                 TargetTransformInfo::SK_PermuteSingleSrc,
                 VecTy,
-                // VecTy,
-                laneMap
+                VecTy,
+                laneMap,
+                TTI::TCK_RecipThroughput
             );
         }
     }

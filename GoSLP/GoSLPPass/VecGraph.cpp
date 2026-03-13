@@ -1,5 +1,6 @@
 // VecGraph
 #include "VecGraph.hpp"
+#include "llvm/ADT/STLExtras.h"
 
 VecGraph buildVectorGraph(CandidatePairs& C) {
     VecGraph graph;
@@ -21,8 +22,10 @@ VecGraph buildVectorGraph(CandidatePairs& C) {
                     if (It != C.InstToCandidates.end()) {
                         for (auto childPack : It->second) {
                             if (childPack.Index != id) {
-                                graph.items[id].Uses.push_back(childPack.Index);
-                                graph.items[childPack.Index].Defs.push_back(id);
+                                if (!llvm::is_contained(graph.items[id].Uses, childPack.Index))
+                                    graph.items[id].Uses.push_back(childPack.Index);
+                                if (!llvm::is_contained(graph.items[childPack.Index].Defs, id))
+                                    graph.items[childPack.Index].Defs.push_back(id);
                             }
                         }
                     }

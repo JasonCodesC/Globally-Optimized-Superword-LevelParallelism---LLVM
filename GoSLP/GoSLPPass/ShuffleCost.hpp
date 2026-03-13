@@ -38,6 +38,10 @@ public:
     
     // pack cost
     InstructionCost getPackCost(const Node &N) const;
+
+    // extract cost for a single lane.
+    InstructionCost getExtractLaneCost(const std::vector<const Instruction *> &Pack,
+                                       unsigned Lane) const;
     
     // unpack cost
     InstructionCost getUnpackCost(const Node &N) const;
